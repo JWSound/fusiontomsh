@@ -1,5 +1,5 @@
 """
-Fusion 360 script for exporting visible surface bodies to configurable Gmsh
+Autodesk Fusion script for exporting visible surface bodies to configurable Gmsh
 .msh meshes for downstream BEM/FEM analysis.
 
 This module creates a Fusion command that:
@@ -8,7 +8,7 @@ This module creates a Fusion command that:
 - Builds and meshes geometry with Gmsh using a user-selected 2D algorithm.
 - Supports per-body meshing controls (minimum size, maximum size, and
     curvature-based sizing weight) to tune mesh density by region.
-- Writes mesh output as .msh files suitable for third-party simulation tools.
+- Writes mesh output as .msh files suitable for third-party BEM/FEM simulation tools.
 
 Dependency loading strategy:
 - First tries a normal installed gmsh package.
