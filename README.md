@@ -1,5 +1,9 @@
 # Fusion to MSH Export (Fusion Script)
 
+<p align="center">
+  <img src="ScriptIcon.png" alt="MSHExport Script Icon" width="25%" />
+</p>
+
 Autodesk Fusion script for exporting **visible surface bodies** to configurable **Gmsh `.msh` meshes** for downstream BEM/FEM workflows.
 
 The script adds an **Export to MSH** command in Fusion, exports each selected surface body as temporary STEP geometry, and generates a 2D mesh in Gmsh with per-body sizing controls.
@@ -54,6 +58,8 @@ At runtime, the script may create:
 5. Select `MSHExport` and run it.
 
 ## Usage
+
+![Fusion Usage Screenshot](FusionScreenshot.png)
 
 1. In your design, make target **surface bodies visible**.
 2. Run the script. The **Export to MSH** dialog opens.
