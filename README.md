@@ -4,13 +4,13 @@
   <img src="ScriptIcon.png" alt="MSHExport Script Icon" width="25%" />
 </p>
 
-Autodesk Fusion script for exporting **visible surface bodies** to configurable **Gmsh `.msh` meshes** for downstream BEM/FEM workflows.
+Autodesk Fusion script for exporting **visible bodies** to configurable **Gmsh `.msh` meshes** for downstream BEM/FEM workflows.
 
-The script adds an **Export to MSH** command in Fusion, exports each selected surface body as temporary STEP geometry, and generates a 2D mesh in Gmsh with per-body sizing controls.
+The script adds an **Export to MSH** command in Fusion, exports each selected body as temporary STEP geometry, and generates a 2D mesh in Gmsh with per-body sizing controls.
 
 ## Features
 
-- Exports visible **non-solid (surface)** bodies from the active design.
+- Exports visible **solid and non-solid** bodies from the active design.
 - Creates one `.msh` output with physical groups named per body/occurrence.
 - Supports per-body mesh controls:
   - Minimum element size
@@ -28,15 +28,10 @@ The script adds an **Export to MSH** command in Fusion, exports each selected su
 
 - Autodesk Fusion (script runtime)
 - Python environment embedded in Fusion
-- Gmsh Python module (`gmsh`)
 
 ### Gmsh dependency resolution
 
-The script loads Gmsh in this order:
-
-1. Installed `gmsh` package
-2. Bundled wheel from `wheelhouse/` (recommended for portable setup)
-3. `pip install gmsh` fallback (if pip/network are available)
+The script loads the Gmsh library from an included bundled wheel package.
 
 ## Repository layout
 
@@ -61,7 +56,7 @@ At runtime, the script may create:
 
 ![Fusion Usage Screenshot](FusionScreenshot.png)
 
-1. In your design, make target **surface bodies visible**.
+1. In your design, make target bodies (solid or non-solid) **visible**.
 2. Run the script. The **Export to MSH** dialog opens.
 3. Choose a 2D meshing algorithm.
 4. Adjust per-body `Min`, `Max`, and `Curvature` values.
@@ -73,14 +68,14 @@ At runtime, the script may create:
 - Fusion internal length units are converted before meshing.
 - Curvature is clamped to `0..100`.
 - If `Max < Min`, `Max` is adjusted to `Min`.
-- Only visible non-solid bodies are included.
+- Only visible bodies are included.
 
 ## Troubleshooting
 
 - **"Gmsh module not found"**
   - Place a compatible `gmsh-*.whl` in `wheelhouse/`, or install `gmsh` in Fusion’s Python environment.
 - **No bodies exported**
-  - Ensure bodies are **surface bodies** and currently **visible**.
+  - Ensure target bodies are currently **visible**.
 - **Unexpected mesh density**
   - Check per-body `Min/Max/Curvature` values and rerun; settings persist in `.msh_export_settings.json`.
 

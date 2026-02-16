@@ -1,9 +1,9 @@
 """
-Autodesk Fusion script for exporting visible surface bodies to configurable Gmsh
+Autodesk Fusion script for exporting visible bodies to configurable Gmsh
 .msh meshes for downstream BEM/FEM analysis.
 
 This module creates a Fusion command that:
-- Detects visible non-solid (surface) bodies in the active design.
+- Detects visible bodies (solid and non-solid) in the active design.
 - Exports each selected body to temporary STEP geometry.
 - Builds and meshes geometry with Gmsh using a user-selected 2D algorithm.
 - Supports per-body meshing controls (minimum size, maximum size, and
@@ -222,13 +222,7 @@ gmsh = _import_gmsh_from_wheelhouse()
 handlers = []
 
 
-def _is_visible_surface_body(body):
-    try:
-        if body.isSolid:
-            return False
-    except:
-        return False
-
+def _is_visible_body(body):
     try:
         return body.isVisible
     except:
@@ -238,19 +232,19 @@ def _is_visible_surface_body(body):
             return False
 
 
-def _collect_visible_surface_bodies(design):
+def _collect_visible_bodies(design):
     root_comp = design.rootComponent
     visible_bodies = []
 
     for body in root_comp.bRepBodies:
-        if _is_visible_surface_body(body):
-            visible_bodies.append((body, body.name or "SurfaceBody"))
+        if _is_visible_body(body):
+            visible_bodies.append((body, body.name or "Body"))
 
     for occurrence in root_comp.allOccurrences:
         occurrence_name = occurrence.fullPathName if occurrence.fullPathName else occurrence.name
         for body in occurrence.bRepBodies:
-            if _is_visible_surface_body(body):
-                body_name = body.name if body.name else "SurfaceBody"
+            if _is_visible_body(body):
+                body_name = body.name if body.name else "Body"
                 visible_bodies.append((body, f"{occurrence_name}:{body_name}"))
 
     return visible_bodies
@@ -357,10 +351,10 @@ class GmshCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             algo_drop.listItems.add('Delaunay', False)
             algo_drop.listItems.add('Frontal-Delaunay', False)
 
-            visible_surface_bodies = _collect_visible_surface_bodies(design)
+            visible_bodies = _collect_visible_bodies(design)
             named_bodies = []
             used_group_names = set()
-            for body, raw_name in visible_surface_bodies:
+            for body, raw_name in visible_bodies:
                 unique_name = _unique_group_name(raw_name, used_group_names)
                 named_bodies.append((body, unique_name))
 
@@ -444,12 +438,12 @@ class GmshCommandExecuteHandler(adsk.core.CommandEventHandler):
                 return
             msh_path = file_dialog.filename
 
-            visible_surface_bodies = _collect_visible_surface_bodies(design)
-            if not visible_surface_bodies:
-                ui.messageBox("No visible surface bodies found to export.")
+            visible_bodies = _collect_visible_bodies(design)
+            if not visible_bodies:
+                ui.messageBox("No visible bodies found to export.")
                 return
 
-            # 3. Export visible surface bodies to STEP (Temp), one-by-one
+            # 3. Export visible bodies to STEP (Temp), one-by-one
             temp_dir = tempfile.gettempdir()
             step_paths = []
             export_mgr = design.exportManager
@@ -463,7 +457,7 @@ class GmshCommandExecuteHandler(adsk.core.CommandEventHandler):
             global_max_val = None
             effective_global_curvature = 0
 
-            for idx, body_info in enumerate(visible_surface_bodies, start=1):
+            for idx, body_info in enumerate(visible_bodies, start=1):
                 body = body_info[0]
                 raw_name = body_info[1]
                 unique_name = _unique_group_name(raw_name, used_group_names)
