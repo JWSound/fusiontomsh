@@ -11,9 +11,7 @@ This module creates a Fusion command that:
 - Writes mesh output as .msh files suitable for third-party BEM/FEM simulation tools.
 
 Dependency loading strategy:
-- First tries a normal installed gmsh package.
-- Then tries bundled gmsh wheel files in a local wheelhouse directory.
-- Finally falls back to pip installation when available.
+- Loads bundled gmsh wheel files in a local wheelhouse directory.
 
 This script is intended to streamline mesh generation directly from Fusion,
 reducing manual export/remeshing steps before external electromagnetic,
@@ -28,6 +26,7 @@ import glob
 import zipfile
 import shutil
 import json
+import platform
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -117,14 +116,64 @@ def _save_mesh_settings(settings_data):
         pass
 
 
+def _merge_tree(src_dir, dst_dir):
+    if not os.path.isdir(src_dir):
+        return
+
+    os.makedirs(dst_dir, exist_ok=True)
+    for root, dir_names, file_names in os.walk(src_dir):
+        rel_root = os.path.relpath(root, src_dir)
+        target_root = dst_dir if rel_root == "." else os.path.join(dst_dir, rel_root)
+        os.makedirs(target_root, exist_ok=True)
+
+        for dir_name in dir_names:
+            os.makedirs(os.path.join(target_root, dir_name), exist_ok=True)
+
+        for file_name in file_names:
+            source_file = os.path.join(root, file_name)
+            target_file = os.path.join(target_root, file_name)
+            shutil.copy2(source_file, target_file)
+
+
+def _normalize_gmsh_wheel_layout(extract_dir):
+    data_roots = glob.glob(os.path.join(extract_dir, "*.data", "data"))
+    for data_root in data_roots:
+        _merge_tree(data_root, extract_dir)
+
+
 def _import_gmsh_from_wheelhouse():
     if not os.path.isdir(WHEELHOUSE_DIR):
         return None
 
-    wheel_paths = sorted(
+    all_wheel_paths = sorted(
         glob.glob(os.path.join(WHEELHOUSE_DIR, "gmsh-*.whl")),
         reverse=True
     )
+
+    machine = platform.machine().lower()
+    wheel_paths = []
+    fallback_wheels = []
+
+    for wheel_path in all_wheel_paths:
+        wheel_filename = os.path.basename(wheel_path).lower()
+
+        if sys.platform.startswith("win"):
+            if "win_amd64" in wheel_filename:
+                wheel_paths.append(wheel_path)
+            else:
+                fallback_wheels.append(wheel_path)
+        elif sys.platform == "darwin":
+            if machine in ("arm64", "aarch64") and "macosx_12_0_arm64" in wheel_filename:
+                wheel_paths.append(wheel_path)
+            elif machine in ("x86_64", "amd64") and "macosx" in wheel_filename and "x86_64" in wheel_filename:
+                wheel_paths.append(wheel_path)
+            else:
+                fallback_wheels.append(wheel_path)
+        else:
+            fallback_wheels.append(wheel_path)
+
+    wheel_paths.extend(fallback_wheels)
+
     if not wheel_paths:
         return None
 
@@ -144,6 +193,16 @@ def _import_gmsh_from_wheelhouse():
             with open(ready_marker, "w", encoding="utf-8") as marker_file:
                 marker_file.write("ok")
 
+        _normalize_gmsh_wheel_layout(extract_dir)
+
+        if sys.platform.startswith("win") and hasattr(os, "add_dll_directory"):
+            for dll_dir in (extract_dir, os.path.join(extract_dir, "lib"), os.path.join(extract_dir, "bin")):
+                if os.path.isdir(dll_dir):
+                    try:
+                        os.add_dll_directory(dll_dir)
+                    except Exception:
+                        pass
+
         sys.path.insert(0, extract_dir)
         try:
             import gmsh as vendored_gmsh
@@ -157,27 +216,7 @@ def _import_gmsh_from_wheelhouse():
     return None
 
 
-def _import_or_install_gmsh():
-    try:
-        import gmsh as installed_gmsh
-        return installed_gmsh
-    except Exception:
-        pass
-
-    vendored_gmsh = _import_gmsh_from_wheelhouse()
-    if vendored_gmsh is not None:
-        return vendored_gmsh
-
-    try:
-        import subprocess
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "gmsh"])
-        import gmsh as pip_gmsh
-        return pip_gmsh
-    except Exception:
-        return None
-
-
-gmsh = _import_or_install_gmsh()
+gmsh = _import_gmsh_from_wheelhouse()
 
 # Global variables to keep handlers in memory
 handlers = []
@@ -265,8 +304,8 @@ def run(context):
 
         if gmsh is None:
             ui.messageBox(
-                "Gmsh module not found. Bundle a gmsh wheel in 'wheelhouse' next to this script "
-                "or install with 'pip install gmsh'."
+                "Gmsh module not found. Bundle a compatible gmsh wheel in the 'wheelhouse' "
+                "folder next to this script."
             )
             return
 
