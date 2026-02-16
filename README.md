@@ -32,11 +32,7 @@ The script adds an **Export to MSH** command in Fusion, exports each selected su
 
 ### Gmsh dependency resolution
 
-The script loads Gmsh in this order:
-
-1. Installed `gmsh` package
-2. Bundled wheel from `wheelhouse/` (recommended for portable setup)
-3. `pip install gmsh` fallback (if pip/network are available)
+The script loads Gmsh from a bundled wheel in `wheelhouse/` 
 
 ## Repository layout
 
