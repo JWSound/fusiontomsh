@@ -38,6 +38,9 @@ COMMAND_ID = "GmshExportCommand"
 DEFAULT_BODY_MIN = 1.5
 DEFAULT_BODY_MAX = 3.0
 DEFAULT_BODY_CURVATURE = 0
+DEFAULT_SEAM_BLENDING_ENABLED = True
+DEFAULT_SEAM_BLEND_FACTOR = 3.0
+BODY_TABLE_MAX_VISIBLE_ROWS = 8
 
 
 def _sanitize_body_settings(min_val, max_val, curvature):
@@ -64,6 +67,7 @@ def _load_mesh_settings():
             "max": DEFAULT_BODY_MAX,
             "curvature": DEFAULT_BODY_CURVATURE,
         },
+        "seam_blending": DEFAULT_SEAM_BLENDING_ENABLED,
         "by_body": {}
     }
 
@@ -85,6 +89,8 @@ def _load_mesh_settings():
             "max": default_max,
             "curvature": default_curvature,
         }
+        seam_blending = loaded.get("seam_blending", DEFAULT_SEAM_BLENDING_ENABLED) if isinstance(loaded, dict) else DEFAULT_SEAM_BLENDING_ENABLED
+        settings["seam_blending"] = seam_blending if isinstance(seam_blending, bool) else DEFAULT_SEAM_BLENDING_ENABLED
 
         loaded_by_body = loaded.get("by_body", {}) if isinstance(loaded, dict) else {}
         if isinstance(loaded_by_body, dict):
@@ -327,6 +333,271 @@ def _export_body_to_step(design, export_mgr, body, step_path):
                 pass
 
 
+def _entity_key(dim_tag):
+    return (int(dim_tag[0]), int(dim_tag[1]))
+
+
+def _entity_exists(existing_entities, dim_tag):
+    return _entity_key(dim_tag) in existing_entities
+
+
+def _boundary_surfaces(dim_tags):
+    surfaces = set()
+    for dim, tag in dim_tags:
+        if dim == 2:
+            surfaces.add(tag)
+        elif dim == 3:
+            try:
+                for boundary_dim, boundary_tag in gmsh.model.getBoundary(
+                    [(dim, tag)],
+                    combined=False,
+                    oriented=False,
+                    recursive=False
+                ):
+                    if boundary_dim == 2:
+                        surfaces.add(boundary_tag)
+            except Exception:
+                pass
+    return sorted(surfaces)
+
+
+def _fragment_body_entities(body_dim_tags):
+    input_records = []
+    all_dim_tags = []
+    for body_idx, dim_tags in enumerate(body_dim_tags):
+        for dim_tag in dim_tags:
+            normalized = _entity_key(dim_tag)
+            input_records.append((body_idx, normalized))
+            all_dim_tags.append(normalized)
+
+    if len(all_dim_tags) < 2:
+        return {idx: list(dim_tags) for idx, dim_tags in enumerate(body_dim_tags)}
+
+    try:
+        _, out_dim_tags_map = gmsh.model.occ.fragment(
+            [all_dim_tags[0]],
+            all_dim_tags[1:],
+            removeObject=True,
+            removeTool=True
+        )
+    except Exception:
+        gmsh.model.occ.synchronize()
+        return {idx: list(dim_tags) for idx, dim_tags in enumerate(body_dim_tags)}
+
+    mapped_by_body = {idx: [] for idx in range(len(body_dim_tags))}
+    for map_idx, mapped_entities in enumerate(out_dim_tags_map):
+        if map_idx >= len(input_records):
+            continue
+        body_idx, _ = input_records[map_idx]
+        for dim_tag in mapped_entities:
+            mapped_by_body[body_idx].append(_entity_key(dim_tag))
+
+    gmsh.model.occ.synchronize()
+    existing_entities = set(_entity_key(dim_tag) for dim_tag in gmsh.model.getEntities())
+    for body_idx, mapped_entities in mapped_by_body.items():
+        deduped = []
+        seen = set()
+        for dim_tag in mapped_entities:
+            if dim_tag in seen or not _entity_exists(existing_entities, dim_tag):
+                continue
+            seen.add(dim_tag)
+            deduped.append(dim_tag)
+        mapped_by_body[body_idx] = deduped
+
+    return mapped_by_body
+
+
+def _collect_shared_curve_adjacency(body_surfaces):
+    curve_to_bodies = {}
+    for body_idx, surfaces in body_surfaces.items():
+        for surface_tag in surfaces:
+            try:
+                boundary = gmsh.model.getBoundary(
+                    [(2, surface_tag)],
+                    combined=False,
+                    oriented=False,
+                    recursive=False
+                )
+            except Exception:
+                continue
+
+            for dim, curve_tag in boundary:
+                if dim != 1:
+                    continue
+                curve_to_bodies.setdefault(curve_tag, set()).add(body_idx)
+
+    return {
+        curve_tag: sorted(body_indices)
+        for curve_tag, body_indices in curve_to_bodies.items()
+        if len(body_indices) > 1
+    }
+
+
+def _add_distance_threshold_field(entity_option, entity_tags, lc_min, lc_max, dist_min, dist_max, surfaces=None):
+    if not entity_tags:
+        return None
+
+    distance_field = gmsh.model.mesh.field.add("Distance")
+    gmsh.model.mesh.field.setNumbers(distance_field, entity_option, sorted(entity_tags))
+    gmsh.model.mesh.field.setNumber(distance_field, "Sampling", 100)
+
+    threshold_field = gmsh.model.mesh.field.add("Threshold")
+    gmsh.model.mesh.field.setNumber(threshold_field, "InField", distance_field)
+    gmsh.model.mesh.field.setNumber(threshold_field, "LcMin", lc_min)
+    gmsh.model.mesh.field.setNumber(threshold_field, "LcMax", lc_max)
+    gmsh.model.mesh.field.setNumber(threshold_field, "DistMin", dist_min)
+    gmsh.model.mesh.field.setNumber(threshold_field, "DistMax", max(dist_max, 1e-6))
+
+    if surfaces is None:
+        return threshold_field
+
+    restrict_field = gmsh.model.mesh.field.add("Restrict")
+    gmsh.model.mesh.field.setNumber(restrict_field, "InField", threshold_field)
+    gmsh.model.mesh.field.setNumbers(restrict_field, "SurfacesList", sorted(surfaces))
+    return restrict_field
+
+
+def _add_background_mesh_fields(body_surfaces, body_settings, enable_seam_fields):
+    field_ids = []
+
+    for body_idx, surfaces in body_surfaces.items():
+        body_min, body_max = body_settings[body_idx]
+        body_field = _add_distance_threshold_field(
+            "FacesList",
+            surfaces,
+            body_min * 10,
+            body_max * 10,
+            0.0,
+            body_max * 10,
+            surfaces
+        )
+        if body_field:
+            field_ids.append(body_field)
+
+    if enable_seam_fields:
+        shared_curves = _collect_shared_curve_adjacency(body_surfaces)
+        shared_curves_by_body = {}
+        for curve_tag, body_indices in shared_curves.items():
+            for body_idx in body_indices:
+                shared_curves_by_body.setdefault(body_idx, set()).add(curve_tag)
+
+        for body_idx, curve_tags in shared_curves_by_body.items():
+            if body_idx not in body_surfaces:
+                continue
+
+            adjacent_body_indices = set()
+            for curve_tag in curve_tags:
+                adjacent_body_indices.update(shared_curves.get(curve_tag, []))
+
+            if not adjacent_body_indices:
+                continue
+
+            seam_lc_min = min(body_settings[idx][0] for idx in adjacent_body_indices) * 10
+            body_lc_max = body_settings[body_idx][1] * 10
+            blend_dist = max(body_lc_max, seam_lc_min) * DEFAULT_SEAM_BLEND_FACTOR
+
+            seam_field = _add_distance_threshold_field(
+                "CurvesList",
+                curve_tags,
+                seam_lc_min,
+                body_lc_max,
+                0.0,
+                blend_dist,
+                body_surfaces[body_idx]
+            )
+            if seam_field:
+                field_ids.append(seam_field)
+
+    if field_ids:
+        if len(field_ids) == 1:
+            gmsh.model.mesh.field.setAsBackgroundMesh(field_ids[0])
+        else:
+            min_field = gmsh.model.mesh.field.add("Min")
+            gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", field_ids)
+            gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
+
+
+def _build_gmsh_export_model(step_paths, group_name_map, body_settings, conformal_topology=True):
+    gmsh.model.add("FusionExport")
+
+    body_surfaces = {}
+
+    if conformal_topology:
+        body_dim_tags = []
+        for step_path in step_paths:
+            imported_entities = gmsh.model.occ.importShapes(step_path)
+            body_dim_tags.append([
+                _entity_key(dim_tag)
+                for dim_tag in imported_entities
+                if dim_tag[0] in (2, 3)
+            ])
+
+        gmsh.model.occ.synchronize()
+        mapped_body_entities = _fragment_body_entities(body_dim_tags)
+        gmsh.model.occ.synchronize()
+
+        for body_idx, group_name in enumerate(group_name_map):
+            surfaces = _boundary_surfaces(mapped_body_entities.get(body_idx, []))
+            if not surfaces:
+                surfaces = _boundary_surfaces(body_dim_tags[body_idx])
+
+            if surfaces:
+                body_surfaces[body_idx] = surfaces
+                physical_tag = gmsh.model.addPhysicalGroup(2, surfaces)
+                gmsh.model.setPhysicalName(2, physical_tag, group_name)
+    else:
+        for body_idx, (step_path, group_name) in enumerate(zip(step_paths, group_name_map)):
+            existing_surfaces = set(tag for _, tag in gmsh.model.getEntities(2))
+            gmsh.model.occ.importShapes(step_path)
+            gmsh.model.occ.synchronize()
+            all_surfaces = set(tag for _, tag in gmsh.model.getEntities(2))
+            new_surfaces = sorted(list(all_surfaces - existing_surfaces))
+
+            if new_surfaces:
+                body_surfaces[body_idx] = new_surfaces
+                physical_tag = gmsh.model.addPhysicalGroup(2, new_surfaces)
+                gmsh.model.setPhysicalName(2, physical_tag, group_name)
+
+    _add_background_mesh_fields(
+        body_surfaces,
+        body_settings,
+        enable_seam_fields=conformal_topology
+    )
+
+
+def _write_gmsh_mesh(
+    msh_path,
+    step_paths,
+    group_name_map,
+    body_settings,
+    global_min_val,
+    global_max_val,
+    effective_global_curvature,
+    algo_id,
+    conformal_topology=True
+):
+    gmsh.initialize()
+    try:
+        _build_gmsh_export_model(
+            step_paths,
+            group_name_map,
+            body_settings,
+            conformal_topology=conformal_topology
+        )
+
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", global_min_val * 10)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", global_max_val * 10)
+        gmsh.option.setNumber("Mesh.Algorithm", algo_id)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", effective_global_curvature)
+        gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
+        gmsh.option.setNumber("Mesh.Binary", 0)
+
+        gmsh.model.mesh.generate(2)
+        gmsh.write(msh_path)
+    finally:
+        gmsh.finalize()
+
+
 def _body_input_id(prefix, idx):
     return f"{prefix}_{idx}"
 
@@ -403,6 +674,14 @@ class GmshCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             algo_drop.listItems.add('Delaunay', False)
             algo_drop.listItems.add('Frontal-Delaunay', False)
 
+            inputs.addBoolValueInput(
+                'seam_blending',
+                'Seam-aware element size blending',
+                True,
+                '',
+                mesh_settings.get("seam_blending", DEFAULT_SEAM_BLENDING_ENABLED)
+            )
+
             visible_bodies = _collect_visible_bodies(design)
             named_bodies = []
             used_group_names = set()
@@ -423,7 +702,17 @@ class GmshCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                 )
 
                 table = inputs.addTableCommandInput('body_override_table', 'Body Settings', 4, '3:1:1:1')
-                table.hasGrid = True
+                table.maximumVisibleRows = min(
+                    len(named_bodies) + 1,
+                    BODY_TABLE_MAX_VISIBLE_ROWS
+                )
+                table.minimumVisibleRows = min(
+                    len(named_bodies) + 1,
+                    BODY_TABLE_MAX_VISIBLE_ROWS
+                )
+                table.rowSpacing = 1
+                table.columnSpacing = 1
+                table.hasGrid = False
 
                 headers = ["Body", "Min (mm)", "Max (mm)", "Curvature"]
                 for col_idx, header in enumerate(headers):
@@ -443,7 +732,7 @@ class GmshCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                     max_input = inputs.addValueInput(_body_input_id('body_max', idx), '', 'mm', adsk.core.ValueInput.createByReal(body_max))
                     curv_input = inputs.addIntegerSpinnerCommandInput(_body_input_id('body_curvature', idx), '', 0, 100, 1, body_curvature)
 
-                    name_input.isEnabled = False
+                    name_input.isReadOnly = True
 
                     table.addCommandInput(name_input, idx, 0)
                     table.addCommandInput(min_input, idx, 1)
@@ -477,6 +766,12 @@ class GmshCommandExecuteHandler(adsk.core.CommandEventHandler):
             # 1. Collect Input Values
             algo_text = inputs.itemById('algo_2d').selectedItem.name
             body_count = inputs.itemById('body_count').value
+            seam_blending_input = inputs.itemById('seam_blending')
+            seam_blending_enabled = (
+                bool(seam_blending_input.value)
+                if seam_blending_input
+                else DEFAULT_SEAM_BLENDING_ENABLED
+            )
 
             # Map Algorithm Text to Gmsh IDs
             # 1: MeshAdapt, 2: Automatic, 5: Delaunay, 6: Frontal-Delaunay
@@ -550,81 +845,83 @@ class GmshCommandExecuteHandler(adsk.core.CommandEventHandler):
                     "curvature": body_curvature,
                 }
 
-            # 4. Gmsh Processing
-            gmsh.initialize()
             try:
-                gmsh.model.add("FusionExport")
+                # 4. Gmsh Processing
+                used_conformal_topology = seam_blending_enabled
+                conformal_error = None
+                if seam_blending_enabled:
+                    try:
+                        _write_gmsh_mesh(
+                            msh_path,
+                            step_paths,
+                            group_name_map,
+                            body_settings,
+                            global_min_val,
+                            global_max_val,
+                            effective_global_curvature,
+                            algo_id,
+                            conformal_topology=True
+                        )
+                    except Exception as mesh_error:
+                        conformal_error = mesh_error
+                        used_conformal_topology = False
+                        _write_gmsh_mesh(
+                            msh_path,
+                            step_paths,
+                            group_name_map,
+                            body_settings,
+                            global_min_val,
+                            global_max_val,
+                            effective_global_curvature,
+                            algo_id,
+                            conformal_topology=False
+                        )
+                else:
+                    _write_gmsh_mesh(
+                        msh_path,
+                        step_paths,
+                        group_name_map,
+                        body_settings,
+                        global_min_val,
+                        global_max_val,
+                        effective_global_curvature,
+                        algo_id,
+                        conformal_topology=False
+                    )
 
-                field_ids = []
-
-                for step_path, group_name, (body_min, body_max) in zip(step_paths, group_name_map, body_settings):
-                    existing_surfaces = set(tag for _, tag in gmsh.model.getEntities(2))
-                    gmsh.model.occ.importShapes(step_path)
-                    gmsh.model.occ.synchronize()
-                    all_surfaces = set(tag for _, tag in gmsh.model.getEntities(2))
-                    new_surfaces = sorted(list(all_surfaces - existing_surfaces))
-
-                    if new_surfaces:
-                        physical_tag = gmsh.model.addPhysicalGroup(2, new_surfaces)
-                        gmsh.model.setPhysicalName(2, physical_tag, group_name)
-
-                        distance_field = gmsh.model.mesh.field.add("Distance")
-                        gmsh.model.mesh.field.setNumbers(distance_field, "FacesList", new_surfaces)
-
-                        threshold_field = gmsh.model.mesh.field.add("Threshold")
-                        gmsh.model.mesh.field.setNumber(threshold_field, "InField", distance_field)
-                        gmsh.model.mesh.field.setNumber(threshold_field, "LcMin", body_min * 10)
-                        gmsh.model.mesh.field.setNumber(threshold_field, "LcMax", body_max * 10)
-                        gmsh.model.mesh.field.setNumber(threshold_field, "DistMin", 0.0)
-                        gmsh.model.mesh.field.setNumber(threshold_field, "DistMax", max(body_max * 10, 1e-6))
-
-                        restrict_field = gmsh.model.mesh.field.add("Restrict")
-                        gmsh.model.mesh.field.setNumber(restrict_field, "InField", threshold_field)
-                        gmsh.model.mesh.field.setNumbers(restrict_field, "SurfacesList", new_surfaces)
-                        field_ids.append(restrict_field)
-
-                if field_ids:
-                    if len(field_ids) == 1:
-                        gmsh.model.mesh.field.setAsBackgroundMesh(field_ids[0])
-                    else:
-                        min_field = gmsh.model.mesh.field.add("Min")
-                        gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", field_ids)
-                        gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
-
-                # Set Mesh Options
-                gmsh.option.setNumber("Mesh.CharacteristicLengthMin", global_min_val * 10) # Convert cm to mm (Fusion internal is cm)
-                gmsh.option.setNumber("Mesh.CharacteristicLengthMax", global_max_val * 10)
-                gmsh.option.setNumber("Mesh.Algorithm", algo_id)
-                gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", effective_global_curvature)
-
-                # ASCII 2.0 Settings (Version 2.2 in Gmsh)
-                gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
-                gmsh.option.setNumber("Mesh.Binary", 0)
-
-                gmsh.model.mesh.generate(2)
-                gmsh.write(msh_path)
+                defaults_min, defaults_max, defaults_curvature = _sanitize_body_settings(
+                    global_min_val,
+                    global_max_val,
+                    effective_global_curvature
+                )
+                _save_mesh_settings({
+                    "defaults": {
+                        "min": defaults_min,
+                        "max": defaults_max,
+                        "curvature": defaults_curvature,
+                    },
+                    "seam_blending": seam_blending_enabled,
+                    "by_body": settings_by_body,
+                })
             finally:
-                gmsh.finalize()
+                for step_path in step_paths:
+                    if os.path.exists(step_path):
+                        os.remove(step_path)
 
-            defaults_min, defaults_max, defaults_curvature = _sanitize_body_settings(
-                global_min_val,
-                global_max_val,
-                effective_global_curvature
-            )
-            _save_mesh_settings({
-                "defaults": {
-                    "min": defaults_min,
-                    "max": defaults_max,
-                    "curvature": defaults_curvature,
-                },
-                "by_body": settings_by_body,
-            })
-
-            for step_path in step_paths:
-                if os.path.exists(step_path):
-                    os.remove(step_path)
-
-            ui.messageBox(f"Export Complete!\nSaved to: {msh_path}")
+            if seam_blending_enabled and used_conformal_topology:
+                ui.messageBox(f"Export Complete!\nSaved to: {msh_path}")
+            elif seam_blending_enabled:
+                ui.messageBox(
+                    "Export Complete using fallback meshing.\n"
+                    "The conformal shared-topology pass failed, so this mesh may not be watertight at body interfaces.\n\n"
+                    f"Original gmsh error:\n{conformal_error}\n\n"
+                    f"Saved to: {msh_path}"
+                )
+            else:
+                ui.messageBox(
+                    "Export Complete with seam-aware element size blending disabled.\n"
+                    f"Saved to: {msh_path}"
+                )
             
         except:
             adsk.core.Application.get().userInterface.messageBox('Execution failed:\n{}'.format(traceback.format_exc()))

@@ -6,7 +6,7 @@
 
 Autodesk Fusion script for exporting **visible bodies** to configurable **Gmsh `.msh` meshes** for downstream BEM/FEM workflows.
 
-The script adds an **Export to MSH** command in Fusion, exports each selected body as temporary STEP geometry, and generates a 2D mesh in Gmsh with per-body sizing controls.
+The script adds an **Export to MSH** command in Fusion, exports each selected body as temporary STEP geometry, and generates a 2D mesh in Gmsh with per-body sizing controls and optional seam-aware blending for connected bodies.
 
 ## Features
 
@@ -16,13 +16,17 @@ The script adds an **Export to MSH** command in Fusion, exports each selected bo
   - Minimum element size
   - Maximum element size
   - Curvature-based sizing weight
+- Supports **seam-aware element size blending** for connected bodies:
+  - Attempts to create conformal shared topology between touching bodies.
+  - Blends mesh size near shared edges toward the smaller adjacent body size.
+  - Falls back to the legacy non-conformal export path if Gmsh cannot mesh the shared topology.
 - Supports Gmsh 2D algorithms:
   - Automatic
   - MeshAdapt
   - Delaunay
   - Frontal-Delaunay
 - Writes ASCII mesh output in Gmsh v2.2 (`.msh`) format for broad compatibility.
-- Persists defaults and per-body settings between runs.
+- Persists defaults, per-body settings, and the seam-aware blending preference between runs.
 
 ## Requirements
 
@@ -59,9 +63,10 @@ At runtime, the script may create:
 1. In your design, make target bodies (solid or non-solid) **visible**.
 2. Run the script. The **Export to MSH** dialog opens.
 3. Choose a 2D meshing algorithm.
-4. Adjust per-body `Min`, `Max`, and `Curvature` values.
-5. Choose save location for the `.msh` file.
-6. The script exports temporary STEP geometry, meshes in Gmsh, and saves the result.
+4. Leave **Seam-aware element size blending** enabled for connected-body BEM workflows, or disable it to use the legacy per-body meshing behavior.
+5. Adjust per-body `Min`, `Max`, and `Curvature` values.
+6. Choose save location for the `.msh` file.
+7. The script exports temporary STEP geometry, meshes in Gmsh, and saves the result.
 
 ## Mesh control notes
 
@@ -69,6 +74,8 @@ At runtime, the script may create:
 - Curvature is clamped to `0..100`.
 - If `Max < Min`, `Max` is adjusted to `Min`.
 - Only visible bodies are included.
+- Seam-aware blending is enabled by default. When enabled, the script first asks Gmsh to fragment touching bodies into shared topology, then applies extra mesh-size fields near shared curves.
+- If the conformal topology pass fails during meshing, the script retries with seam-aware blending disabled and warns that the fallback mesh may not be watertight at body interfaces.
 
 ## Troubleshooting
 
@@ -78,6 +85,8 @@ At runtime, the script may create:
   - Ensure target bodies are currently **visible**.
 - **Unexpected mesh density**
   - Check per-body `Min/Max/Curvature` values and rerun; settings persist in `.msh_export_settings.json`.
+- **Fallback meshing warning**
+  - Gmsh rejected the seam-aware shared topology for the current geometry. The exported mesh was still written using the legacy path, but connected-body interfaces may need inspection before BEM use.
 
 ## License
 

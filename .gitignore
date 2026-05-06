@@ -850,3 +850,4 @@
 .msh_export_settings.json
 .gmsh_wheels/gmsh-4.15.0-py2.py3-none-win_amd64/.normalized
 .vscode/settings.json
+.gmsh_wheels/gmsh-4.15.0-py2.py3-none-win_amd64/__pycache__/gmsh.cpython-312.pyc
