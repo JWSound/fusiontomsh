@@ -18,7 +18,7 @@ The script adds an **Export to MSH** command in Fusion, exports each selected bo
   - Curvature-based sizing weight
 - Supports **seam-aware element size blending** for connected bodies:
   - Attempts to create conformal shared topology between touching bodies.
-  - Blends mesh size near shared edges toward the smaller adjacent body size.
+  - Blends only coarser bodies near shared edges toward the smaller adjacent body size, preserving finer bodies' requested sizing.
   - Falls back to the legacy non-conformal export path if Gmsh cannot mesh the shared topology.
 - Supports Gmsh 2D algorithms:
   - Automatic
@@ -74,7 +74,7 @@ At runtime, the script may create:
 - Curvature is clamped to `0..100`.
 - If `Max < Min`, `Max` is adjusted to `Min`.
 - Only visible bodies are included.
-- Seam-aware blending is enabled by default. When enabled, the script first asks Gmsh to fragment touching bodies into shared topology, then applies extra mesh-size fields near shared curves.
+- Seam-aware blending is enabled by default. When enabled, the script first asks Gmsh to fragment touching bodies into shared topology, then applies extra mesh-size fields near shared curves only on bodies that are coarser than an adjacent body.
 - If the conformal topology pass fails during meshing, the script retries with seam-aware blending disabled and warns that the fallback mesh may not be watertight at body interfaces.
 
 ## Troubleshooting

@@ -476,37 +476,40 @@ def _add_background_mesh_fields(body_surfaces, body_settings, enable_seam_fields
 
     if enable_seam_fields:
         shared_curves = _collect_shared_curve_adjacency(body_surfaces)
-        shared_curves_by_body = {}
+        seam_targets_by_body = {}
         for curve_tag, body_indices in shared_curves.items():
             for body_idx in body_indices:
-                shared_curves_by_body.setdefault(body_idx, set()).add(curve_tag)
+                if body_idx not in body_surfaces:
+                    continue
 
-        for body_idx, curve_tags in shared_curves_by_body.items():
-            if body_idx not in body_surfaces:
-                continue
+                body_lc_min = body_settings[body_idx][0] * 10
+                finer_adjacent_mins = [
+                    body_settings[idx][0] * 10
+                    for idx in body_indices
+                    if idx != body_idx and body_settings[idx][0] * 10 < body_lc_min
+                ]
+                if not finer_adjacent_mins:
+                    continue
 
-            adjacent_body_indices = set()
-            for curve_tag in curve_tags:
-                adjacent_body_indices.update(shared_curves.get(curve_tag, []))
+                seam_lc_min = min(finer_adjacent_mins)
+                seam_targets_by_body.setdefault(body_idx, {}).setdefault(seam_lc_min, set()).add(curve_tag)
 
-            if not adjacent_body_indices:
-                continue
-
-            seam_lc_min = min(body_settings[idx][0] for idx in adjacent_body_indices) * 10
+        for body_idx, seam_targets in seam_targets_by_body.items():
             body_lc_max = body_settings[body_idx][1] * 10
-            blend_dist = max(body_lc_max, seam_lc_min) * DEFAULT_SEAM_BLEND_FACTOR
+            for seam_lc_min, curve_tags in seam_targets.items():
+                blend_dist = max(body_lc_max, seam_lc_min) * DEFAULT_SEAM_BLEND_FACTOR
 
-            seam_field = _add_distance_threshold_field(
-                "CurvesList",
-                curve_tags,
-                seam_lc_min,
-                body_lc_max,
-                0.0,
-                blend_dist,
-                body_surfaces[body_idx]
-            )
-            if seam_field:
-                field_ids.append(seam_field)
+                seam_field = _add_distance_threshold_field(
+                    "CurvesList",
+                    curve_tags,
+                    seam_lc_min,
+                    body_lc_max,
+                    0.0,
+                    blend_dist,
+                    body_surfaces[body_idx]
+                )
+                if seam_field:
+                    field_ids.append(seam_field)
 
     if field_ids:
         if len(field_ids) == 1:
