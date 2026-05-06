@@ -33,6 +33,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WHEELHOUSE_DIR = os.path.join(SCRIPT_DIR, "wheelhouse")
 WHEEL_EXTRACT_DIR = os.path.join(SCRIPT_DIR, ".gmsh_wheels")
 SETTINGS_PATH = os.path.join(SCRIPT_DIR, ".msh_export_settings.json")
+COMMAND_ID = "GmshExportCommand"
 
 DEFAULT_BODY_MIN = 1.5
 DEFAULT_BODY_MAX = 3.0
@@ -132,13 +133,29 @@ def _merge_tree(src_dir, dst_dir):
         for file_name in file_names:
             source_file = os.path.join(root, file_name)
             target_file = os.path.join(target_root, file_name)
-            shutil.copy2(source_file, target_file)
+            if os.path.exists(target_file):
+                continue
+            try:
+                shutil.copy2(source_file, target_file)
+            except PermissionError:
+                if not os.path.exists(target_file):
+                    raise
 
 
 def _normalize_gmsh_wheel_layout(extract_dir):
+    normalized_marker = os.path.join(extract_dir, ".normalized")
+    if os.path.isfile(normalized_marker):
+        return
+
     data_roots = glob.glob(os.path.join(extract_dir, "*.data", "data"))
     for data_root in data_roots:
         _merge_tree(data_root, extract_dir)
+
+    try:
+        with open(normalized_marker, "w", encoding="utf-8") as marker_file:
+            marker_file.write("ok")
+    except Exception:
+        pass
 
 
 def _import_gmsh_from_wheelhouse():
@@ -216,10 +233,33 @@ def _import_gmsh_from_wheelhouse():
     return None
 
 
-gmsh = _import_gmsh_from_wheelhouse()
+gmsh = None
 
 # Global variables to keep handlers in memory
 handlers = []
+
+
+def _cleanup_command_definition(ui=None):
+    try:
+        if ui is None:
+            ui = adsk.core.Application.get().userInterface
+        cmd_def = ui.commandDefinitions.itemById(COMMAND_ID)
+        if cmd_def:
+            cmd_def.deleteMe()
+    except Exception:
+        pass
+
+
+def _finish_script(ui=None, terminate=True, cleanup_command=True):
+    if cleanup_command:
+        _cleanup_command_definition(ui)
+    handlers.clear()
+    if not terminate:
+        return
+    try:
+        adsk.terminate()
+    except Exception:
+        pass
 
 
 def _is_visible_body(body):
@@ -291,10 +331,17 @@ def _body_input_id(prefix, idx):
     return f"{prefix}_{idx}"
 
 def run(context):
+    global gmsh
     ui = None
     try:
         app = adsk.core.Application.get()
         ui  = app.userInterface
+
+        _cleanup_command_definition(ui)
+        handlers.clear()
+
+        if gmsh is None:
+            gmsh = _import_gmsh_from_wheelhouse()
 
         if gmsh is None:
             ui.messageBox(
@@ -304,26 +351,31 @@ def run(context):
             return
 
         # Create a command definition
-        cmd_def = ui.commandDefinitions.itemById('GmshExportCommand')
-        if cmd_def:
-            cmd_def.deleteMe()
-        
-        cmd_def = ui.commandDefinitions.addButtonDefinition('GmshExportCommand', 'Export to MSH', 'Generates a .msh file using Gmsh')
+        cmd_def = ui.commandDefinitions.addButtonDefinition(COMMAND_ID, 'Export to MSH', 'Generates a .msh file using Gmsh')
         
         # Connect to the command created event
         onCommandCreated = GmshCommandCreatedHandler()
         cmd_def.commandCreated.add(onCommandCreated)
         handlers.append(onCommandCreated)
-        
+
+        # Keep this script alive before Fusion starts command event dispatch.
+        adsk.autoTerminate(False)
+
         # Execute the command
         cmd_def.execute()
-
-        # Prevent the script from terminating until the dialog is closed
-        adsk.autoTerminate(False)
 
     except:
         if ui:
             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+        _finish_script(ui)
+
+
+def stop(context):
+    try:
+        app = adsk.core.Application.get()
+        _finish_script(app.userInterface, terminate=False, cleanup_command=False)
+    except Exception:
+        handlers.clear()
 
 # --- Event Handlers ---
 
@@ -410,6 +462,7 @@ class GmshCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             
         except:
             adsk.core.Application.get().userInterface.messageBox('Error creating dialog:\n{}'.format(traceback.format_exc()))
+            _finish_script()
 
 class GmshCommandExecuteHandler(adsk.core.CommandEventHandler):
     def __init__(self):
@@ -580,5 +633,9 @@ class GmshCommandDestroyHandler(adsk.core.CommandEventHandler):
     def __init__(self):
         super().__init__()
     def notify(self, args):
-        # Allows the script to finish and the "Running" status to disappear
-        adsk.terminate()
+        # Let Fusion finish command teardown before stop() releases handlers and
+        # deletes the transient command definition.
+        try:
+            adsk.terminate()
+        except Exception:
+            pass
