@@ -41,6 +41,7 @@ DEFAULT_BODY_CURVATURE = 0
 DEFAULT_SEAM_BLENDING_ENABLED = True
 DEFAULT_SEAM_BLEND_FACTOR = 3.0
 BODY_TABLE_MAX_VISIBLE_ROWS = 8
+FUSION_TO_GMSH_LENGTH_SCALE = 10.0
 
 
 def _sanitize_body_settings(min_val, max_val, curvature):
@@ -341,6 +342,38 @@ def _entity_exists(existing_entities, dim_tag):
     return _entity_key(dim_tag) in existing_entities
 
 
+def _gmsh_length(fusion_length):
+    return float(fusion_length) * FUSION_TO_GMSH_LENGTH_SCALE
+
+
+def _set_gmsh_option_if_available(name, value):
+    try:
+        gmsh.option.setNumber(name, value)
+        return True
+    except Exception:
+        return False
+
+
+def _apply_global_mesh_size_limits(min_size, max_size):
+    _set_gmsh_option_if_available("Mesh.MeshSizeMin", min_size)
+    _set_gmsh_option_if_available("Mesh.MeshSizeMax", max_size)
+
+    # Older Gmsh builds used CharacteristicLength* names. Set both so the
+    # bundled wheel and any user-supplied wheel agree on the same size limits.
+    _set_gmsh_option_if_available("Mesh.CharacteristicLengthMin", min_size)
+    _set_gmsh_option_if_available("Mesh.CharacteristicLengthMax", max_size)
+
+
+def _install_global_min_mesh_size_callback(min_size):
+    def mesh_size_floor_callback(dim, tag, x, y, z, lc):
+        return max(float(lc), min_size)
+
+    try:
+        gmsh.model.mesh.setSizeCallback(mesh_size_floor_callback)
+    except Exception:
+        pass
+
+
 def _boundary_surfaces(dim_tags):
     surfaces = set()
     for dim, tag in dim_tags:
@@ -465,10 +498,10 @@ def _add_background_mesh_fields(body_surfaces, body_settings, enable_seam_fields
         body_field = _add_distance_threshold_field(
             "FacesList",
             surfaces,
-            body_min * 10,
-            body_max * 10,
+            _gmsh_length(body_min),
+            _gmsh_length(body_max),
             0.0,
-            body_max * 10,
+            _gmsh_length(body_max),
             surfaces
         )
         if body_field:
@@ -482,11 +515,11 @@ def _add_background_mesh_fields(body_surfaces, body_settings, enable_seam_fields
                 if body_idx not in body_surfaces:
                     continue
 
-                body_lc_min = body_settings[body_idx][0] * 10
+                body_lc_min = _gmsh_length(body_settings[body_idx][0])
                 finer_adjacent_mins = [
-                    body_settings[idx][0] * 10
+                    _gmsh_length(body_settings[idx][0])
                     for idx in body_indices
-                    if idx != body_idx and body_settings[idx][0] * 10 < body_lc_min
+                    if idx != body_idx and _gmsh_length(body_settings[idx][0]) < body_lc_min
                 ]
                 if not finer_adjacent_mins:
                     continue
@@ -495,7 +528,7 @@ def _add_background_mesh_fields(body_surfaces, body_settings, enable_seam_fields
                 seam_targets_by_body.setdefault(body_idx, {}).setdefault(seam_lc_min, set()).add(curve_tag)
 
         for body_idx, seam_targets in seam_targets_by_body.items():
-            body_lc_max = body_settings[body_idx][1] * 10
+            body_lc_max = _gmsh_length(body_settings[body_idx][1])
             for seam_lc_min, curve_tags in seam_targets.items():
                 blend_dist = max(body_lc_max, seam_lc_min) * DEFAULT_SEAM_BLEND_FACTOR
 
@@ -588,8 +621,13 @@ def _write_gmsh_mesh(
             conformal_topology=conformal_topology
         )
 
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", global_min_val * 10)
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", global_max_val * 10)
+        global_min_size = _gmsh_length(global_min_val)
+        global_max_size = _gmsh_length(global_max_val)
+
+        _apply_global_mesh_size_limits(global_min_size, global_max_size)
+        _install_global_min_mesh_size_callback(global_min_size)
+        _set_gmsh_option_if_available("Mesh.MeshSizeExtendFromBoundary", 0)
+        _set_gmsh_option_if_available("Mesh.MeshSizeFromPoints", 0)
         gmsh.option.setNumber("Mesh.Algorithm", algo_id)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", effective_global_curvature)
         gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)

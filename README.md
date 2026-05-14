@@ -75,6 +75,7 @@ At runtime, the script may create:
 - If `Max < Min`, `Max` is adjusted to `Min`.
 - Only visible bodies are included.
 - Seam-aware blending is enabled by default. When enabled, the script first asks Gmsh to fragment touching bodies into shared topology, then applies extra mesh-size fields near shared curves only on bodies that are coarser than an adjacent body.
+- The smallest per-body `Min` value is also applied as a global Gmsh mesh-size floor, so seam blending, curvature sizing, and imported boundary sizing should not request elements below the user-specified minimum.
 - If the conformal topology pass fails during meshing, the script retries with seam-aware blending disabled and warns that the fallback mesh may not be watertight at body interfaces.
 
 ## Troubleshooting
