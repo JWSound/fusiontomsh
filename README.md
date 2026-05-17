@@ -1,7 +1,7 @@
 # Fusion to MSH Export (Fusion Add-In)
 
 <p align="center">
-  <img src="scripticon.png" alt="MSHExport Script Icon" width="25%" />
+  <img src="scripticon.svg" alt="MSHExport Script Icon" width="25%" />
 </p>
 
 Autodesk Fusion script for exporting **visible bodies** to configurable **Gmsh `.msh` meshes** for downstream BEM/FEM workflows.
@@ -30,8 +30,7 @@ The script adds an **Export to MSH** command in Fusion, exports each selected bo
 
 ## Requirements
 
-- Autodesk Fusion (script runtime)
-- Python environment embedded in Fusion
+- Autodesk Fusion
 
 ### Gmsh dependency resolution
 
@@ -41,6 +40,7 @@ The script loads the Gmsh library from an included bundled wheel package.
 
 - `MSHExport.py` — main Fusion add-in
 - `MSHExport.manifest` — Fusion add-in manifest
+- `Resources/` — script icons
 - `wheelhouse/` — optional bundled wheels (includes `gmsh-4.15.0-...whl`)
 
 At runtime, the script may create:
@@ -50,27 +50,27 @@ At runtime, the script may create:
 
 ## Install in Fusion
 
-1. Open Fusion.
-2. Go to **Utilities → Scripts and Add-Ins**.
-3. Open the **Add-Ins** tab.
-4. Add this folder as an add-in location if needed.
-5. Select `MSHExport` and run it.
+1. Clone or download this repo and extract its contents into a folder.
+2. Open Fusion.
+3. Go to **Utilities → Add-Ins**.
+4. Click the **+** icon and **Script or add-in from device**
+5. Select fusiontomsh folder. Enable the add-in in the list and if needed turn on **Run on Startup**
+6. Run the tool using the icons in the Utilities navbar.
 
 ## Usage
 
 ![Fusion Usage Screenshot](FusionScreenshot.png)
 
 1. In your design, make target bodies (solid or non-solid) **visible**.
-2. Use **Utilities → MSH Export → Export to MSH**. The **Export to MSH** dialog opens.
+2. Use **Utilities → Export to MSH**. The **Export to MSH** dialog opens.
 3. Choose a 2D meshing algorithm.
 4. Leave **Seam-aware element size blending** enabled for connected-body BEM workflows, or disable it to use the legacy per-body meshing behavior.
 5. Adjust per-body `Min`, `Max`, and `Curvature` values.
 6. Choose save location for the `.msh` file.
 7. The add-in exports temporary STEP geometry, meshes in Gmsh, and saves the result.
 
-After a normal export has saved settings and a path, use **Quick Export to MSH**
-from the same **MSH Export** toolbar panel to overwrite the last `.msh` file without opening
-the options dialog.
+After a normal export has ran, use **Quick Export to MSH**
+from the same **MSH Export** toolbar panel to overwrite the last `.msh` file using the same settings.
 
 ## Mesh control notes
 
