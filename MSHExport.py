@@ -819,6 +819,30 @@ def _format_export_result_message(result):
     )
 
 
+def _format_export_status_message(result):
+    msh_path = result.get("msh_path", "")
+    file_name = os.path.basename(msh_path) if msh_path else "mesh"
+    if result.get("used_conformal_topology"):
+        return f"MSH export complete: {file_name}"
+    return f"MSH export complete with seam blending disabled: {file_name}"
+
+
+def _show_export_result(ui, result):
+    if not result.get("success"):
+        ui.messageBox(result.get("message"))
+        return
+
+    if result.get("conformal_error") is not None:
+        ui.messageBox(_format_export_result_message(result))
+        return
+
+    try:
+        ui.statusMessage = _format_export_status_message(result)
+        adsk.doEvents()
+    except:
+        ui.messageBox(_format_export_result_message(result))
+
+
 def _body_input_id(prefix, idx):
     return f"{prefix}_{idx}"
 
@@ -1085,7 +1109,7 @@ class GmshCommandExecuteHandler(adsk.core.CommandEventHandler):
                 body_setting_resolver
             )
 
-            ui.messageBox(_format_export_result_message(result) if result.get("success") else result.get("message"))
+            _show_export_result(ui, result)
             
         except:
             adsk.core.Application.get().userInterface.messageBox('Execution failed:\n{}'.format(traceback.format_exc()))
@@ -1152,7 +1176,7 @@ class GmshQuickExportCommandExecuteHandler(adsk.core.CommandEventHandler):
                 body_setting_resolver
             )
 
-            ui.messageBox(_format_export_result_message(result) if result.get("success") else result.get("message"))
+            _show_export_result(ui, result)
         except:
             adsk.core.Application.get().userInterface.messageBox('Quick export failed:\n{}'.format(traceback.format_exc()))
 
