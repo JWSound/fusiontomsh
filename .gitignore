@@ -1,6 +1,19 @@
+# Local editor settings
 .vscode/settings.json
-.gmsh_wheels/
-.vscode/settings.json
+
+# Local environment and per-user export settings
 .env
 .msh_export_settings.json
-.vscode/settings.json
+
+# Runtime/generated dependencies
+.gmsh_wheels/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# OS metadata
+.DS_Store
+Thumbs.db

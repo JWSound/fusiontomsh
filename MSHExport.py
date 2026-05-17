@@ -33,12 +33,21 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WHEELHOUSE_DIR = os.path.join(SCRIPT_DIR, "wheelhouse")
 WHEEL_EXTRACT_DIR = os.path.join(SCRIPT_DIR, ".gmsh_wheels")
 SETTINGS_PATH = os.path.join(SCRIPT_DIR, ".msh_export_settings.json")
-COMMAND_ID = "GmshExportCommand"
+EXPORT_ICON_RESOURCE_FOLDER = os.path.join(SCRIPT_DIR, "Resources", "MSHExport")
+QUICK_EXPORT_ICON_RESOURCE_FOLDER = os.path.join(SCRIPT_DIR, "Resources", "MSHQuickExport")
+EXPORT_COMMAND_ID = "GmshExportCommand"
+QUICK_EXPORT_COMMAND_ID = "GmshQuickExportCommand"
+COMMAND_IDS = (EXPORT_COMMAND_ID, QUICK_EXPORT_COMMAND_ID)
+WORKSPACE_ID = "FusionSolidEnvironment"
+TOOLBAR_TAB_ID = "ToolsTab"
+PANEL_ID = "GmshExportPanel"
+LEGACY_PANEL_IDS = ("SolidScriptsAddinsPanel",)
 
 DEFAULT_BODY_MIN = 1.5
 DEFAULT_BODY_MAX = 3.0
 DEFAULT_BODY_CURVATURE = 0
 DEFAULT_SEAM_BLENDING_ENABLED = True
+DEFAULT_ALGO_2D = "Automatic"
 DEFAULT_SEAM_BLEND_FACTOR = 3.0
 BODY_TABLE_MAX_VISIBLE_ROWS = 8
 FUSION_TO_GMSH_LENGTH_SCALE = 10.0
@@ -63,6 +72,8 @@ def _sanitize_body_settings(min_val, max_val, curvature):
 
 def _load_mesh_settings():
     settings = {
+        "last_msh_path": "",
+        "algo_2d": DEFAULT_ALGO_2D,
         "defaults": {
             "min": DEFAULT_BODY_MIN,
             "max": DEFAULT_BODY_MAX,
@@ -78,6 +89,15 @@ def _load_mesh_settings():
     try:
         with open(SETTINGS_PATH, "r", encoding="utf-8") as settings_file:
             loaded = json.load(settings_file)
+
+        if isinstance(loaded, dict):
+            last_msh_path = loaded.get("last_msh_path", "")
+            if isinstance(last_msh_path, str):
+                settings["last_msh_path"] = last_msh_path
+
+            algo_2d = loaded.get("algo_2d", DEFAULT_ALGO_2D)
+            if algo_2d in ("Automatic", "MeshAdapt", "Delaunay", "Frontal-Delaunay"):
+                settings["algo_2d"] = algo_2d
 
         defaults = loaded.get("defaults", {}) if isinstance(loaded, dict) else {}
         default_min, default_max, default_curvature = _sanitize_body_settings(
@@ -250,9 +270,24 @@ def _cleanup_command_definition(ui=None):
     try:
         if ui is None:
             ui = adsk.core.Application.get().userInterface
-        cmd_def = ui.commandDefinitions.itemById(COMMAND_ID)
-        if cmd_def:
-            cmd_def.deleteMe()
+
+        for panel_id in (PANEL_ID,) + LEGACY_PANEL_IDS:
+            panel = ui.allToolbarPanels.itemById(panel_id)
+            if not panel:
+                continue
+            for command_id in COMMAND_IDS:
+                control = panel.controls.itemById(command_id)
+                if control:
+                    control.deleteMe()
+
+        panel = ui.allToolbarPanels.itemById(PANEL_ID)
+        if panel:
+            panel.deleteMe()
+
+        for command_id in COMMAND_IDS:
+            cmd_def = ui.commandDefinitions.itemById(command_id)
+            if cmd_def:
+                cmd_def.deleteMe()
     except Exception:
         pass
 
@@ -639,8 +674,204 @@ def _write_gmsh_mesh(
         gmsh.finalize()
 
 
+def _algo_text_to_id(algo_text):
+    # 1: MeshAdapt, 2: Automatic, 5: Delaunay, 6: Frontal-Delaunay
+    algo_map = {"Automatic": 2, "MeshAdapt": 1, "Delaunay": 5, "Frontal-Delaunay": 6}
+    return algo_map.get(algo_text, 2)
+
+
+def _export_visible_bodies_to_msh(design, msh_path, algo_text, seam_blending_enabled, body_setting_resolver):
+    visible_bodies = _collect_visible_bodies(design)
+    if not visible_bodies:
+        return {
+            "success": False,
+            "message": "No visible bodies found to export.",
+        }
+
+    temp_dir = tempfile.gettempdir()
+    step_paths = []
+    export_mgr = design.exportManager
+
+    group_name_map = []
+    used_group_names = set()
+    body_settings = []
+    settings_by_body = {}
+
+    global_min_val = None
+    global_max_val = None
+    effective_global_curvature = 0
+
+    for idx, body_info in enumerate(visible_bodies, start=1):
+        body = body_info[0]
+        raw_name = body_info[1]
+        unique_name = _unique_group_name(raw_name, used_group_names)
+
+        body_min, body_max, body_curvature = body_setting_resolver(idx, unique_name)
+        body_min, body_max, body_curvature = _sanitize_body_settings(body_min, body_max, body_curvature)
+
+        if global_min_val is None or body_min < global_min_val:
+            global_min_val = body_min
+        if global_max_val is None or body_max > global_max_val:
+            global_max_val = body_max
+        if body_curvature > effective_global_curvature:
+            effective_global_curvature = body_curvature
+
+        step_path = os.path.join(temp_dir, f'fusion_export_temp_{idx}.step')
+        _export_body_to_step(design, export_mgr, body, step_path)
+        step_paths.append(step_path)
+        group_name_map.append(unique_name)
+        body_settings.append((body_min, body_max))
+        settings_by_body[unique_name] = {
+            "min": body_min,
+            "max": body_max,
+            "curvature": body_curvature,
+        }
+
+    used_conformal_topology = seam_blending_enabled
+    conformal_error = None
+
+    try:
+        if seam_blending_enabled:
+            try:
+                _write_gmsh_mesh(
+                    msh_path,
+                    step_paths,
+                    group_name_map,
+                    body_settings,
+                    global_min_val,
+                    global_max_val,
+                    effective_global_curvature,
+                    _algo_text_to_id(algo_text),
+                    conformal_topology=True
+                )
+            except Exception as mesh_error:
+                conformal_error = mesh_error
+                used_conformal_topology = False
+                _write_gmsh_mesh(
+                    msh_path,
+                    step_paths,
+                    group_name_map,
+                    body_settings,
+                    global_min_val,
+                    global_max_val,
+                    effective_global_curvature,
+                    _algo_text_to_id(algo_text),
+                    conformal_topology=False
+                )
+        else:
+            _write_gmsh_mesh(
+                msh_path,
+                step_paths,
+                group_name_map,
+                body_settings,
+                global_min_val,
+                global_max_val,
+                effective_global_curvature,
+                _algo_text_to_id(algo_text),
+                conformal_topology=False
+            )
+
+        defaults_min, defaults_max, defaults_curvature = _sanitize_body_settings(
+            global_min_val,
+            global_max_val,
+            effective_global_curvature
+        )
+        _save_mesh_settings({
+            "last_msh_path": msh_path,
+            "algo_2d": algo_text,
+            "defaults": {
+                "min": defaults_min,
+                "max": defaults_max,
+                "curvature": defaults_curvature,
+            },
+            "seam_blending": seam_blending_enabled,
+            "by_body": settings_by_body,
+        })
+    finally:
+        for step_path in step_paths:
+            if os.path.exists(step_path):
+                os.remove(step_path)
+
+    return {
+        "success": True,
+        "used_conformal_topology": used_conformal_topology,
+        "conformal_error": conformal_error,
+        "msh_path": msh_path,
+    }
+
+
+def _format_export_result_message(result):
+    msh_path = result.get("msh_path", "")
+    if result.get("used_conformal_topology"):
+        return f"Export Complete!\nSaved to: {msh_path}"
+
+    if result.get("conformal_error") is not None:
+        return (
+            "Export Complete using fallback meshing.\n"
+            "The conformal shared-topology pass failed, so this mesh may not be watertight at body interfaces.\n\n"
+            f"Original gmsh error:\n{result.get('conformal_error')}\n\n"
+            f"Saved to: {msh_path}"
+        )
+
+    return (
+        "Export Complete with seam-aware element size blending disabled.\n"
+        f"Saved to: {msh_path}"
+    )
+
+
 def _body_input_id(prefix, idx):
     return f"{prefix}_{idx}"
+
+
+def _get_export_panel(ui):
+    workspace = ui.workspaces.itemById(WORKSPACE_ID)
+    if not workspace:
+        return ui.allToolbarPanels.itemById(PANEL_ID)
+
+    tab = workspace.toolbarTabs.itemById(TOOLBAR_TAB_ID)
+    if tab:
+        panel = tab.toolbarPanels.itemById(PANEL_ID)
+        if panel:
+            return panel
+
+        try:
+            return tab.toolbarPanels.add(PANEL_ID, "MSH Export", "SolidScriptsAddinsPanel", False)
+        except:
+            return tab.toolbarPanels.add(PANEL_ID, "MSH Export")
+
+    panel = workspace.toolbarPanels.itemById(PANEL_ID)
+    if panel:
+        return panel
+
+    try:
+        return workspace.toolbarPanels.add(PANEL_ID, "MSH Export")
+    except:
+        pass
+
+    return ui.allToolbarPanels.itemById(PANEL_ID)
+
+
+def _add_toolbar_button(ui, command_id, name, description, handler, icon_resource_folder):
+    cmd_def = ui.commandDefinitions.itemById(command_id)
+    if not cmd_def:
+        cmd_def = ui.commandDefinitions.addButtonDefinition(command_id, name, description, icon_resource_folder)
+    else:
+        cmd_def.resourceFolder = icon_resource_folder
+
+    cmd_def.commandCreated.add(handler)
+    handlers.append(handler)
+
+    panel = _get_export_panel(ui)
+    if not panel:
+        raise RuntimeError("Could not create Fusion's Utilities > MSH Export toolbar panel.")
+
+    control = panel.controls.itemById(command_id)
+    if not control:
+        control = panel.controls.addCommand(cmd_def)
+    control.isPromoted = True
+    control.isPromotedByDefault = True
+    return control
+
 
 def run(context):
     global gmsh
@@ -662,19 +893,24 @@ def run(context):
             )
             return
 
-        # Create a command definition
-        cmd_def = ui.commandDefinitions.addButtonDefinition(COMMAND_ID, 'Export to MSH', 'Generates a .msh file using Gmsh')
-        
-        # Connect to the command created event
-        onCommandCreated = GmshCommandCreatedHandler()
-        cmd_def.commandCreated.add(onCommandCreated)
-        handlers.append(onCommandCreated)
+        _add_toolbar_button(
+            ui,
+            EXPORT_COMMAND_ID,
+            'Export to MSH',
+            'Generates a .msh file using Gmsh',
+            GmshCommandCreatedHandler(),
+            EXPORT_ICON_RESOURCE_FOLDER
+        )
+        _add_toolbar_button(
+            ui,
+            QUICK_EXPORT_COMMAND_ID,
+            'Quick Export to MSH',
+            'Overwrites the last .msh export using the saved mesh settings',
+            GmshQuickExportCommandCreatedHandler(),
+            QUICK_EXPORT_ICON_RESOURCE_FOLDER
+        )
 
-        # Keep this script alive before Fusion starts command event dispatch.
         adsk.autoTerminate(False)
-
-        # Execute the command
-        cmd_def.execute()
 
     except:
         if ui:
@@ -685,7 +921,7 @@ def run(context):
 def stop(context):
     try:
         app = adsk.core.Application.get()
-        _finish_script(app.userInterface, terminate=False, cleanup_command=False)
+        _finish_script(app.userInterface, terminate=False, cleanup_command=True)
     except Exception:
         handlers.clear()
 
@@ -710,10 +946,9 @@ class GmshCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 
             # 2D Algorithm Dropdown
             algo_drop = inputs.addDropDownCommandInput('algo_2d', '2D Algorithm', adsk.core.DropDownStyles.TextListDropDownStyle)
-            algo_drop.listItems.add('Automatic', True)
-            algo_drop.listItems.add('MeshAdapt', False)
-            algo_drop.listItems.add('Delaunay', False)
-            algo_drop.listItems.add('Frontal-Delaunay', False)
+            saved_algo = mesh_settings.get("algo_2d", DEFAULT_ALGO_2D)
+            for algo_name in ("Automatic", "MeshAdapt", "Delaunay", "Frontal-Delaunay"):
+                algo_drop.listItems.add(algo_name, algo_name == saved_algo)
 
             inputs.addBoolValueInput(
                 'seam_blending',
@@ -814,43 +1049,18 @@ class GmshCommandExecuteHandler(adsk.core.CommandEventHandler):
                 else DEFAULT_SEAM_BLENDING_ENABLED
             )
 
-            # Map Algorithm Text to Gmsh IDs
-            # 1: MeshAdapt, 2: Automatic, 5: Delaunay, 6: Frontal-Delaunay
-            algo_map = {"Automatic": 2, "MeshAdapt": 1, "Delaunay": 5, "Frontal-Delaunay": 6}
-            algo_id = algo_map.get(algo_text, 2)
-
             # 2. File Dialog for Save Location
             file_dialog = ui.createFileDialog()
             file_dialog.title = "Save Mesh File"
             file_dialog.filter = 'Mesh Files (*.msh)'
+            saved_path = _load_mesh_settings().get("last_msh_path", "")
+            if saved_path:
+                file_dialog.initialFilename = saved_path
             if file_dialog.showSave() != adsk.core.DialogResults.DialogOK:
                 return
             msh_path = file_dialog.filename
 
-            visible_bodies = _collect_visible_bodies(design)
-            if not visible_bodies:
-                ui.messageBox("No visible bodies found to export.")
-                return
-
-            # 3. Export visible bodies to STEP (Temp), one-by-one
-            temp_dir = tempfile.gettempdir()
-            step_paths = []
-            export_mgr = design.exportManager
-
-            group_name_map = []
-            used_group_names = set()
-            body_settings = []
-            settings_by_body = {}
-
-            global_min_val = None
-            global_max_val = None
-            effective_global_curvature = 0
-
-            for idx, body_info in enumerate(visible_bodies, start=1):
-                body = body_info[0]
-                raw_name = body_info[1]
-                unique_name = _unique_group_name(raw_name, used_group_names)
-
+            def body_setting_resolver(idx, _unique_name):
                 body_min = DEFAULT_BODY_MIN
                 body_max = DEFAULT_BODY_MAX
                 body_curvature = DEFAULT_BODY_CURVATURE
@@ -865,115 +1075,90 @@ class GmshCommandExecuteHandler(adsk.core.CommandEventHandler):
                         body_max = max_input.value
                     if curv_input:
                         body_curvature = curv_input.value
+                return body_min, body_max, body_curvature
 
-                body_min, body_max, body_curvature = _sanitize_body_settings(body_min, body_max, body_curvature)
+            result = _export_visible_bodies_to_msh(
+                design,
+                msh_path,
+                algo_text,
+                seam_blending_enabled,
+                body_setting_resolver
+            )
 
-                if global_min_val is None or body_min < global_min_val:
-                    global_min_val = body_min
-                if global_max_val is None or body_max > global_max_val:
-                    global_max_val = body_max
-                if body_curvature > effective_global_curvature:
-                    effective_global_curvature = body_curvature
-
-                step_path = os.path.join(temp_dir, f'fusion_export_temp_{idx}.step')
-                _export_body_to_step(design, export_mgr, body, step_path)
-                step_paths.append(step_path)
-                group_name_map.append(unique_name)
-                body_settings.append((body_min, body_max))
-                settings_by_body[unique_name] = {
-                    "min": body_min,
-                    "max": body_max,
-                    "curvature": body_curvature,
-                }
-
-            try:
-                # 4. Gmsh Processing
-                used_conformal_topology = seam_blending_enabled
-                conformal_error = None
-                if seam_blending_enabled:
-                    try:
-                        _write_gmsh_mesh(
-                            msh_path,
-                            step_paths,
-                            group_name_map,
-                            body_settings,
-                            global_min_val,
-                            global_max_val,
-                            effective_global_curvature,
-                            algo_id,
-                            conformal_topology=True
-                        )
-                    except Exception as mesh_error:
-                        conformal_error = mesh_error
-                        used_conformal_topology = False
-                        _write_gmsh_mesh(
-                            msh_path,
-                            step_paths,
-                            group_name_map,
-                            body_settings,
-                            global_min_val,
-                            global_max_val,
-                            effective_global_curvature,
-                            algo_id,
-                            conformal_topology=False
-                        )
-                else:
-                    _write_gmsh_mesh(
-                        msh_path,
-                        step_paths,
-                        group_name_map,
-                        body_settings,
-                        global_min_val,
-                        global_max_val,
-                        effective_global_curvature,
-                        algo_id,
-                        conformal_topology=False
-                    )
-
-                defaults_min, defaults_max, defaults_curvature = _sanitize_body_settings(
-                    global_min_val,
-                    global_max_val,
-                    effective_global_curvature
-                )
-                _save_mesh_settings({
-                    "defaults": {
-                        "min": defaults_min,
-                        "max": defaults_max,
-                        "curvature": defaults_curvature,
-                    },
-                    "seam_blending": seam_blending_enabled,
-                    "by_body": settings_by_body,
-                })
-            finally:
-                for step_path in step_paths:
-                    if os.path.exists(step_path):
-                        os.remove(step_path)
-
-            if seam_blending_enabled and used_conformal_topology:
-                ui.messageBox(f"Export Complete!\nSaved to: {msh_path}")
-            elif seam_blending_enabled:
-                ui.messageBox(
-                    "Export Complete using fallback meshing.\n"
-                    "The conformal shared-topology pass failed, so this mesh may not be watertight at body interfaces.\n\n"
-                    f"Original gmsh error:\n{conformal_error}\n\n"
-                    f"Saved to: {msh_path}"
-                )
-            else:
-                ui.messageBox(
-                    "Export Complete with seam-aware element size blending disabled.\n"
-                    f"Saved to: {msh_path}"
-                )
+            ui.messageBox(_format_export_result_message(result) if result.get("success") else result.get("message"))
             
         except:
             adsk.core.Application.get().userInterface.messageBox('Execution failed:\n{}'.format(traceback.format_exc()))
+
+
+class GmshQuickExportCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
+    def __init__(self):
+        super().__init__()
+    def notify(self, args):
+        try:
+            cmd = args.command
+
+            onExecute = GmshQuickExportCommandExecuteHandler()
+            cmd.execute.add(onExecute)
+            handlers.append(onExecute)
+
+            onDestroy = GmshCommandDestroyHandler()
+            cmd.destroy.add(onDestroy)
+            handlers.append(onDestroy)
+        except:
+            adsk.core.Application.get().userInterface.messageBox('Error creating quick export command:\n{}'.format(traceback.format_exc()))
+
+
+class GmshQuickExportCommandExecuteHandler(adsk.core.CommandEventHandler):
+    def __init__(self):
+        super().__init__()
+    def notify(self, args):
+        try:
+            app = adsk.core.Application.get()
+            ui = app.userInterface
+            design = app.activeProduct
+            mesh_settings = _load_mesh_settings()
+
+            msh_path = mesh_settings.get("last_msh_path", "")
+            if not msh_path:
+                ui.messageBox("Quick Export needs a saved mesh path. Run Export to MSH once and choose a save location.")
+                return
+
+            output_dir = os.path.dirname(msh_path)
+            if output_dir and not os.path.isdir(output_dir):
+                ui.messageBox(f"Quick Export cannot find the saved output folder:\n{output_dir}")
+                return
+
+            default_settings = mesh_settings.get("defaults", {})
+            default_min, default_max, default_curvature = _sanitize_body_settings(
+                default_settings.get("min", DEFAULT_BODY_MIN),
+                default_settings.get("max", DEFAULT_BODY_MAX),
+                default_settings.get("curvature", DEFAULT_BODY_CURVATURE)
+            )
+
+            def body_setting_resolver(_idx, unique_name):
+                body_saved = mesh_settings.get("by_body", {}).get(unique_name, {})
+                return _sanitize_body_settings(
+                    body_saved.get("min", default_min),
+                    body_saved.get("max", default_max),
+                    body_saved.get("curvature", default_curvature)
+                )
+
+            result = _export_visible_bodies_to_msh(
+                design,
+                msh_path,
+                mesh_settings.get("algo_2d", DEFAULT_ALGO_2D),
+                mesh_settings.get("seam_blending", DEFAULT_SEAM_BLENDING_ENABLED),
+                body_setting_resolver
+            )
+
+            ui.messageBox(_format_export_result_message(result) if result.get("success") else result.get("message"))
+        except:
+            adsk.core.Application.get().userInterface.messageBox('Quick export failed:\n{}'.format(traceback.format_exc()))
+
 
 class GmshCommandDestroyHandler(adsk.core.CommandEventHandler):
     def __init__(self):
         super().__init__()
     def notify(self, args):
-        # Let Fusion finish command teardown before stop() releases handlers and
-        # deletes the transient command definition.
-        try:
-            adsk.terminate()
-        except Exception:
-            pass
+        pass
