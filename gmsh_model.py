@@ -132,15 +132,15 @@ def add_background_mesh_fields(gmsh_module, body_surfaces, body_settings, enable
     field_ids = []
 
     for body_idx, surfaces in body_surfaces.items():
-        body_min, body_max = body_settings[body_idx]
+        body_size = body_settings[body_idx]
         body_field = add_distance_threshold_field(
             gmsh_module,
             "FacesList",
             surfaces,
-            gmsh_support.gmsh_length(body_min),
-            gmsh_support.gmsh_length(body_max),
+            gmsh_support.gmsh_length(body_size),
+            gmsh_support.gmsh_length(body_size),
             0.0,
-            gmsh_support.gmsh_length(body_max),
+            gmsh_support.gmsh_length(body_size),
             surfaces
         )
         if body_field:
@@ -154,29 +154,29 @@ def add_background_mesh_fields(gmsh_module, body_surfaces, body_settings, enable
                 if body_idx not in body_surfaces:
                     continue
 
-                body_lc_min = gmsh_support.gmsh_length(body_settings[body_idx][0])
-                finer_adjacent_mins = [
-                    gmsh_support.gmsh_length(body_settings[idx][0])
+                body_lc = gmsh_support.gmsh_length(body_settings[body_idx])
+                finer_adjacent_sizes = [
+                    gmsh_support.gmsh_length(body_settings[idx])
                     for idx in body_indices
-                    if idx != body_idx and gmsh_support.gmsh_length(body_settings[idx][0]) < body_lc_min
+                    if idx != body_idx and gmsh_support.gmsh_length(body_settings[idx]) < body_lc
                 ]
-                if not finer_adjacent_mins:
+                if not finer_adjacent_sizes:
                     continue
 
-                seam_lc_min = min(finer_adjacent_mins)
+                seam_lc_min = min(finer_adjacent_sizes)
                 seam_targets_by_body.setdefault(body_idx, {}).setdefault(seam_lc_min, set()).add(curve_tag)
 
         for body_idx, seam_targets in seam_targets_by_body.items():
-            body_lc_max = gmsh_support.gmsh_length(body_settings[body_idx][1])
+            body_lc = gmsh_support.gmsh_length(body_settings[body_idx])
             for seam_lc_min, curve_tags in seam_targets.items():
-                blend_dist = max(body_lc_max, seam_lc_min) * DEFAULT_SEAM_BLEND_FACTOR
+                blend_dist = max(body_lc, seam_lc_min) * DEFAULT_SEAM_BLEND_FACTOR
 
                 seam_field = add_distance_threshold_field(
                     gmsh_module,
                     "CurvesList",
                     curve_tags,
                     seam_lc_min,
-                    body_lc_max,
+                    body_lc,
                     0.0,
                     blend_dist,
                     body_surfaces[body_idx]

@@ -4,8 +4,7 @@ from typing import Any
 
 @dataclass
 class BodyMeshSettings:
-    min_size: float
-    max_size: float
+    size: float
     curvature: int
 
 

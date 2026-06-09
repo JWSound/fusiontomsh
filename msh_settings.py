@@ -1,8 +1,7 @@
 import json
 
 
-DEFAULT_BODY_MIN = 1.5
-DEFAULT_BODY_MAX = 3.0
+DEFAULT_BODY_SIZE = 1.5
 DEFAULT_BODY_CURVATURE = 0
 DEFAULT_SEAM_BLENDING_ENABLED = True
 DEFAULT_ALGO_2D = "Automatic"
@@ -10,21 +9,30 @@ DEFAULT_ALGO_2D = "Automatic"
 ALGO_2D_NAMES = ("Automatic", "MeshAdapt", "Delaunay", "Frontal-Delaunay")
 
 
-def sanitize_body_settings(min_val, max_val, curvature):
-    safe_min = float(min_val) if min_val is not None else DEFAULT_BODY_MIN
-    safe_max = float(max_val) if max_val is not None else DEFAULT_BODY_MAX
+def sanitize_body_size_settings(size_val, curvature):
+    safe_size = float(size_val) if size_val is not None else DEFAULT_BODY_SIZE
     safe_curvature = int(curvature) if curvature is not None else DEFAULT_BODY_CURVATURE
 
-    if safe_min <= 0:
-        safe_min = 1e-6
-    if safe_max < safe_min:
-        safe_max = safe_min
+    if safe_size <= 0:
+        safe_size = 1e-6
     if safe_curvature < 0:
         safe_curvature = 0
     if safe_curvature > 100:
         safe_curvature = 100
 
-    return safe_min, safe_max, safe_curvature
+    return safe_size, safe_curvature
+
+
+def sanitize_body_settings(min_val, max_val, curvature):
+    size_val = min_val if min_val is not None else max_val
+    safe_size, safe_curvature = sanitize_body_size_settings(size_val, curvature)
+    return safe_size, safe_size, safe_curvature
+
+
+def body_size_from_settings(settings, default_size):
+    if not isinstance(settings, dict):
+        return default_size
+    return settings.get("size", settings.get("min", default_size))
 
 
 def load_mesh_settings(settings_path):
@@ -32,8 +40,7 @@ def load_mesh_settings(settings_path):
         "last_msh_path": "",
         "algo_2d": DEFAULT_ALGO_2D,
         "defaults": {
-            "min": DEFAULT_BODY_MIN,
-            "max": DEFAULT_BODY_MAX,
+            "size": DEFAULT_BODY_SIZE,
             "curvature": DEFAULT_BODY_CURVATURE,
         },
         "seam_blending": DEFAULT_SEAM_BLENDING_ENABLED,
@@ -57,14 +64,12 @@ def load_mesh_settings(settings_path):
                 settings["algo_2d"] = algo_2d
 
         defaults = loaded.get("defaults", {}) if isinstance(loaded, dict) else {}
-        default_min, default_max, default_curvature = sanitize_body_settings(
-            defaults.get("min", DEFAULT_BODY_MIN),
-            defaults.get("max", DEFAULT_BODY_MAX),
+        default_size, default_curvature = sanitize_body_size_settings(
+            body_size_from_settings(defaults, DEFAULT_BODY_SIZE),
             defaults.get("curvature", DEFAULT_BODY_CURVATURE)
         )
         settings["defaults"] = {
-            "min": default_min,
-            "max": default_max,
+            "size": default_size,
             "curvature": default_curvature,
         }
 
@@ -77,14 +82,12 @@ def load_mesh_settings(settings_path):
             for body_name, body_values in loaded_by_body.items():
                 if not isinstance(body_name, str) or not isinstance(body_values, dict):
                     continue
-                body_min, body_max, body_curvature = sanitize_body_settings(
-                    body_values.get("min", default_min),
-                    body_values.get("max", default_max),
+                body_size, body_curvature = sanitize_body_size_settings(
+                    body_size_from_settings(body_values, default_size),
                     body_values.get("curvature", default_curvature)
                 )
                 cleaned_by_body[body_name] = {
-                    "min": body_min,
-                    "max": body_max,
+                    "size": body_size,
                     "curvature": body_curvature,
                 }
             settings["by_body"] = cleaned_by_body
