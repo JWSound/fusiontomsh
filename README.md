@@ -26,6 +26,11 @@ The script adds an **Export to MSH** command in Fusion, exports each selected bo
   - Frontal-Delaunay
 - Writes ASCII mesh output in Gmsh v2.2 (`.msh`) format for broad compatibility.
 - Persists defaults, per-body settings, and the seam-aware blending preference between runs.
+- Adds a separate **Export FEM MSH** command for single-body volumetric acoustic FEM meshes:
+  - Selects one solid/watertight target body.
+  - Exports Gmsh MSH 4.1 tetrahedral volume meshes.
+  - Creates a physical volume group for the selected body and physical surface groups for tagged faces.
+  - Supports optional face-based boundary groups with local element sizing that blends back to the default volume size.
 
 ## Requirements
 
@@ -71,6 +76,14 @@ At runtime, the script may create:
 After a normal export has ran, use **Quick Export to MSH**
 from the same **MSH Export** toolbar panel to overwrite the last `.msh` file using the same settings.
 
+For volumetric acoustic FEM export, use **Export FEM MSH** from the same toolbar panel:
+
+1. Select one solid/watertight target body.
+2. Set the default volume mesh size.
+3. Optionally expand boundary groups, name each group, set a local size, and select one or more faces.
+4. Choose a save location for the `.msh` file.
+5. The add-in exports a Gmsh MSH 4.1 volume mesh with physical volume and surface groups.
+
 ## Mesh control notes
 
 - Fusion internal length units are converted before meshing.
@@ -79,6 +92,7 @@ from the same **MSH Export** toolbar panel to overwrite the last `.msh` file usi
 - Seam-aware blending is enabled by default. When enabled, the script first asks Gmsh to fragment touching bodies into shared topology, then applies extra mesh-size fields near shared curves only on bodies that are coarser than an adjacent body.
 - The smallest per-body `Size` value is applied as a global Gmsh mesh-size floor, and the largest per-body `Size` value is applied as the global mesh-size ceiling.
 - If the conformal topology pass fails during meshing, the script retries with seam-aware blending disabled and warns that the fallback mesh may not be watertight at body interfaces.
+- FEM export is intentionally single-body in this first pass. Face boundary tags are matched to imported Gmsh surfaces by geometry, so model edits or STEP topology changes may require retagging.
 
 ## Troubleshooting
 

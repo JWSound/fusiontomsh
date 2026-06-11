@@ -11,6 +11,13 @@ def is_visible_body(body):
             return False
 
 
+def is_solid_body(body):
+    try:
+        return bool(body.isSolid)
+    except Exception:
+        return False
+
+
 def collect_visible_bodies(design):
     root_comp = design.rootComponent
     visible_bodies = []

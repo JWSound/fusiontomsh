@@ -163,7 +163,10 @@ def write_gmsh_mesh(
     global_min_val,
     global_max_val,
     effective_global_curvature,
-    algo_id,
+    algo_id=None,
+    mesh_dimension=2,
+    msh_file_version=2.2,
+    algo_3d_id=None,
 ):
     gmsh_module.initialize()
     try:
@@ -176,12 +179,15 @@ def write_gmsh_mesh(
         install_global_min_mesh_size_callback(gmsh_module, global_min_size)
         set_gmsh_option_if_available(gmsh_module, "Mesh.MeshSizeExtendFromBoundary", 0)
         set_gmsh_option_if_available(gmsh_module, "Mesh.MeshSizeFromPoints", 0)
-        gmsh_module.option.setNumber("Mesh.Algorithm", algo_id)
+        if algo_id is not None:
+            gmsh_module.option.setNumber("Mesh.Algorithm", algo_id)
+        if algo_3d_id is not None:
+            gmsh_module.option.setNumber("Mesh.Algorithm3D", algo_3d_id)
         gmsh_module.option.setNumber("Mesh.MeshSizeFromCurvature", effective_global_curvature)
-        gmsh_module.option.setNumber("Mesh.MshFileVersion", 2.2)
+        gmsh_module.option.setNumber("Mesh.MshFileVersion", msh_file_version)
         gmsh_module.option.setNumber("Mesh.Binary", 0)
 
-        gmsh_module.model.mesh.generate(2)
+        gmsh_module.model.mesh.generate(mesh_dimension)
         gmsh_module.write(msh_path)
     finally:
         gmsh_module.finalize()

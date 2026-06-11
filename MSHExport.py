@@ -28,13 +28,19 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 import export_workflow
+import fem_model
 import fusion_export
 import gmsh_support
 from msh_settings import (
+    ALGO_3D_NAMES,
     ALGO_2D_NAMES,
+    DEFAULT_ALGO_3D,
     DEFAULT_ALGO_2D,
     DEFAULT_BODY_CURVATURE,
     DEFAULT_BODY_SIZE,
+    DEFAULT_FEM_BOUNDARY_SIZE,
+    DEFAULT_FEM_SIZE,
+    DEFAULT_FEM_TAG_COUNT,
     DEFAULT_SEAM_BLENDING_ENABLED,
     load_mesh_settings,
     sanitize_body_size_settings,
@@ -48,7 +54,8 @@ EXPORT_ICON_RESOURCE_FOLDER = os.path.join(SCRIPT_DIR, "Resources", "MSHExport")
 QUICK_EXPORT_ICON_RESOURCE_FOLDER = os.path.join(SCRIPT_DIR, "Resources", "MSHQuickExport")
 EXPORT_COMMAND_ID = "GmshExportCommand"
 QUICK_EXPORT_COMMAND_ID = "GmshQuickExportCommand"
-COMMAND_IDS = (EXPORT_COMMAND_ID, QUICK_EXPORT_COMMAND_ID)
+FEM_EXPORT_COMMAND_ID = "GmshFEMExportCommand"
+COMMAND_IDS = (EXPORT_COMMAND_ID, QUICK_EXPORT_COMMAND_ID, FEM_EXPORT_COMMAND_ID)
 WORKSPACE_ID = "FusionSolidEnvironment"
 TOOLBAR_TAB_ID = "ToolsTab"
 PANEL_ID = "GmshExportPanel"
@@ -133,6 +140,20 @@ def _export_visible_bodies_to_msh(design, msh_path, algo_text, seam_blending_ena
     )
 
 
+def _export_fem_body_to_msh(design, body, body_name, msh_path, default_size, algo_3d_text, boundary_groups):
+    return export_workflow.export_fem_body_to_msh(
+        gmsh,
+        design,
+        body,
+        body_name,
+        msh_path,
+        default_size,
+        algo_3d_text,
+        boundary_groups,
+        SETTINGS_PATH,
+    )
+
+
 def _format_export_result_message(result):
     msh_path = result.get("msh_path", "")
     if result.get("used_conformal_topology"):
@@ -176,8 +197,54 @@ def _show_export_result(ui, result):
         ui.messageBox(_format_export_result_message(result))
 
 
+def _show_fem_export_result(ui, result):
+    if not result.get("success"):
+        ui.messageBox(result.get("message"))
+        return
+
+    file_name = os.path.basename(result.get("msh_path", "")) or "mesh"
+    unmatched_groups = result.get("unmatched_groups", [])
+    if unmatched_groups:
+        ui.messageBox(
+            "FEM mesh export complete, but some boundary groups could not be matched after STEP import:\n"
+            + "\n".join(unmatched_groups)
+            + f"\n\nSaved to: {result.get('msh_path', '')}"
+        )
+        return
+
+    try:
+        ui.statusMessage = f"FEM MSH4 export complete: {file_name}"
+        adsk.doEvents()
+    except:
+        ui.messageBox(f"FEM mesh export complete.\nSaved to: {result.get('msh_path', '')}")
+
+
 def _body_input_id(prefix, idx):
     return f"{prefix}_{idx}"
+
+
+def _fem_tag_input_id(prefix, idx):
+    return f"fem_{prefix}_{idx}"
+
+
+def _selected_entity(selection_input, idx=0):
+    if not selection_input or selection_input.selectionCount <= idx:
+        return None
+    try:
+        return selection_input.selection(idx).entity
+    except Exception:
+        return None
+
+
+def _selected_entities(selection_input):
+    entities = []
+    if not selection_input:
+        return entities
+    for idx in range(selection_input.selectionCount):
+        entity = _selected_entity(selection_input, idx)
+        if entity:
+            entities.append(entity)
+    return entities
 
 
 def _get_export_panel(ui):
@@ -265,6 +332,14 @@ def run(context):
             'Overwrites the last .msh export using the saved mesh settings',
             GmshQuickExportCommandCreatedHandler(),
             QUICK_EXPORT_ICON_RESOURCE_FOLDER
+        )
+        _add_toolbar_button(
+            ui,
+            FEM_EXPORT_COMMAND_ID,
+            'Export FEM MSH',
+            'Generates a volumetric MSH4 FEM mesh from one solid body',
+            GmshFEMCommandCreatedHandler(),
+            EXPORT_ICON_RESOURCE_FOLDER
         )
 
         adsk.autoTerminate(False)
@@ -503,6 +578,172 @@ class GmshQuickExportCommandExecuteHandler(adsk.core.CommandEventHandler):
             _show_export_result(ui, result)
         except:
             adsk.core.Application.get().userInterface.messageBox('Quick export failed:\n{}'.format(traceback.format_exc()))
+
+
+class GmshFEMCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
+    def __init__(self):
+        super().__init__()
+    def notify(self, args):
+        try:
+            cmd = args.command
+            try:
+                cmd.setDialogInitialSize(640, 620)
+                cmd.setDialogMinimumSize(420, 420)
+            except:
+                pass
+
+            inputs = cmd.commandInputs
+            mesh_settings = _load_mesh_settings()
+            fem_settings = mesh_settings.get("fem", {})
+
+            body_selection = inputs.addSelectionInput(
+                'fem_body',
+                'Target Body',
+                'Select one solid/watertight body to export as a FEM volume.'
+            )
+            body_selection.addSelectionFilter('SolidBodies')
+            body_selection.setSelectionLimits(1, 1)
+
+            default_size = fem_settings.get("default_size", DEFAULT_FEM_SIZE)
+            inputs.addValueInput(
+                'fem_default_size',
+                'Default Size',
+                'mm',
+                adsk.core.ValueInput.createByReal(default_size)
+            )
+
+            algo_drop = inputs.addDropDownCommandInput(
+                'fem_algo_3d',
+                '3D Algorithm',
+                adsk.core.DropDownStyles.TextListDropDownStyle
+            )
+            saved_algo = fem_settings.get("algo_3d", DEFAULT_ALGO_3D)
+            for algo_name in ALGO_3D_NAMES:
+                algo_drop.listItems.add(algo_name, algo_name == saved_algo)
+
+            inputs.addTextBoxCommandInput(
+                'fem_boundary_note',
+                'Boundary Tags',
+                'Optional named face groups. Each group can have a smaller element size that blends back to the default size.',
+                2,
+                True
+            )
+
+            boundary_size = fem_settings.get("boundary_size", DEFAULT_FEM_BOUNDARY_SIZE)
+            default_names = ("Radiator", "Port", "Boundary 3", "Boundary 4")
+            for idx in range(1, DEFAULT_FEM_TAG_COUNT + 1):
+                group = inputs.addGroupCommandInput(_fem_tag_input_id('group', idx), f"Boundary Group {idx}")
+                group.isExpanded = idx == 1
+                group_inputs = group.children
+
+                group_inputs.addStringValueInput(
+                    _fem_tag_input_id('name', idx),
+                    'Name',
+                    default_names[idx - 1] if idx <= len(default_names) else f"Boundary {idx}"
+                )
+                group_inputs.addValueInput(
+                    _fem_tag_input_id('size', idx),
+                    'Size',
+                    'mm',
+                    adsk.core.ValueInput.createByReal(boundary_size)
+                )
+                face_selection = group_inputs.addSelectionInput(
+                    _fem_tag_input_id('faces', idx),
+                    'Faces',
+                    'Select one or more faces for this boundary group.'
+                )
+                face_selection.addSelectionFilter('Faces')
+                face_selection.setSelectionLimits(0, 0)
+
+            onExecute = GmshFEMCommandExecuteHandler()
+            cmd.execute.add(onExecute)
+            handlers.append(onExecute)
+
+            onDestroy = GmshCommandDestroyHandler()
+            cmd.destroy.add(onDestroy)
+            handlers.append(onDestroy)
+        except:
+            adsk.core.Application.get().userInterface.messageBox('Error creating FEM export dialog:\n{}'.format(traceback.format_exc()))
+
+
+class GmshFEMCommandExecuteHandler(adsk.core.CommandEventHandler):
+    def __init__(self):
+        super().__init__()
+    def notify(self, args):
+        try:
+            app = adsk.core.Application.get()
+            ui = app.userInterface
+            design = app.activeProduct
+            inputs = args.command.commandInputs
+
+            body = _selected_entity(inputs.itemById('fem_body'))
+            if body is None:
+                ui.messageBox("Select one solid body before exporting a FEM mesh.")
+                return
+            if not fusion_export.is_solid_body(body):
+                ui.messageBox("The selected target body is not a solid/watertight body.")
+                return
+
+            default_size_input = inputs.itemById('fem_default_size')
+            default_size = default_size_input.value if default_size_input else DEFAULT_FEM_SIZE
+            algo_text = inputs.itemById('fem_algo_3d').selectedItem.name
+
+            boundary_groups = []
+            used_faces = set()
+            for idx in range(1, DEFAULT_FEM_TAG_COUNT + 1):
+                name_input = inputs.itemById(_fem_tag_input_id('name', idx))
+                size_input = inputs.itemById(_fem_tag_input_id('size', idx))
+                faces_input = inputs.itemById(_fem_tag_input_id('faces', idx))
+                group_name = name_input.value.strip() if name_input else ""
+                faces = _selected_entities(faces_input)
+                if not group_name or not faces:
+                    continue
+
+                duplicate_faces = []
+                face_descriptors = []
+                for face in faces:
+                    try:
+                        token = getattr(face, "tempId", None) or getattr(face, "entityToken", None) or id(face)
+                    except Exception:
+                        token = id(face)
+                    if token in used_faces:
+                        duplicate_faces.append(group_name)
+                        continue
+                    used_faces.add(token)
+                    face_descriptors.append(fem_model.fusion_face_descriptor(face))
+
+                if duplicate_faces:
+                    ui.messageBox("A face can only belong to one boundary group. Remove duplicate face selections and try again.")
+                    return
+
+                boundary_groups.append({
+                    "name": group_name,
+                    "size": size_input.value if size_input else default_size,
+                    "face_descriptors": face_descriptors,
+                })
+
+            file_dialog = ui.createFileDialog()
+            file_dialog.title = "Save FEM Mesh File"
+            file_dialog.filter = 'Mesh Files (*.msh)'
+            saved_path = _load_mesh_settings().get("fem", {}).get("last_msh_path", "")
+            if saved_path:
+                file_dialog.initialFilename = saved_path
+            if file_dialog.showSave() != adsk.core.DialogResults.DialogOK:
+                return
+
+            body_name = body.name if body.name else "FEMVolume"
+            result = _export_fem_body_to_msh(
+                design,
+                body,
+                body_name,
+                file_dialog.filename,
+                default_size,
+                algo_text,
+                boundary_groups,
+            )
+            _show_fem_export_result(ui, result)
+        except:
+            adsk.core.Application.get().userInterface.messageBox('FEM export failed:\n{}'.format(traceback.format_exc()))
 
 
 class GmshCommandDestroyHandler(adsk.core.CommandEventHandler):

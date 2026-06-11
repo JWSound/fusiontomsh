@@ -2,10 +2,11 @@ import os
 import tempfile
 
 from export_types import BodyMeshSettings, ExportBody
+import fem_model
 import fusion_export
 import gmsh_model
 import gmsh_support
-from msh_settings import algo_text_to_id, sanitize_body_size_settings, save_mesh_settings
+from msh_settings import algo_3d_text_to_id, algo_text_to_id, sanitize_body_size_settings, save_fem_settings, save_mesh_settings
 
 
 def _write_gmsh_mesh(
@@ -168,4 +169,100 @@ def export_visible_bodies_to_msh(
         "used_conformal_topology": used_conformal_topology,
         "conformal_error": conformal_error,
         "msh_path": msh_path,
+    }
+
+
+def export_fem_body_to_msh(
+    gmsh_module,
+    design,
+    body,
+    body_name,
+    msh_path,
+    default_size,
+    algo_3d_text,
+    boundary_groups,
+    settings_path,
+):
+    if body is None:
+        return {
+            "success": False,
+            "message": "Select one solid body before exporting a FEM mesh.",
+        }
+
+    if not fusion_export.is_solid_body(body):
+        return {
+            "success": False,
+            "message": "The selected target body is not a solid/watertight body.",
+        }
+
+    default_size, _ = sanitize_body_size_settings(default_size, 0)
+    cleaned_boundary_groups = []
+    global_min_val = default_size
+    global_max_val = default_size
+
+    for boundary_group in boundary_groups:
+        group_name = boundary_group.get("name", "").strip()
+        face_descriptors = boundary_group.get("face_descriptors", [])
+        if not group_name or not face_descriptors:
+            continue
+
+        group_size, _ = sanitize_body_size_settings(boundary_group.get("size", default_size), 0)
+        global_min_val = min(global_min_val, group_size)
+        global_max_val = max(global_max_val, group_size)
+        cleaned_boundary_groups.append({
+            "name": group_name,
+            "size": group_size,
+            "face_descriptors": face_descriptors,
+        })
+
+    temp_dir = tempfile.gettempdir()
+    step_path = os.path.join(temp_dir, "fusion_fem_export_temp.step")
+    export_mgr = design.exportManager
+    mesh_info = {}
+
+    try:
+        fusion_export.export_body_to_step(design, export_mgr, body, step_path)
+
+        def build_model():
+            mesh_info.update(fem_model.build_fem_export_model(
+                gmsh_module,
+                step_path,
+                body_name,
+                default_size,
+                cleaned_boundary_groups
+            ))
+
+        gmsh_support.write_gmsh_mesh(
+            gmsh_module,
+            msh_path,
+            build_model,
+            global_min_val,
+            global_max_val,
+            0,
+            algo_id=None,
+            mesh_dimension=3,
+            msh_file_version=4.1,
+            algo_3d_id=algo_3d_text_to_id(algo_3d_text),
+        )
+
+        save_fem_settings(settings_path, {
+            "last_msh_path": msh_path,
+            "algo_3d": algo_3d_text,
+            "default_size": default_size,
+            "boundary_size": (
+                cleaned_boundary_groups[0]["size"]
+                if cleaned_boundary_groups
+                else default_size
+            ),
+        })
+    finally:
+        if os.path.exists(step_path):
+            os.remove(step_path)
+
+    return {
+        "success": True,
+        "msh_path": msh_path,
+        "unmatched_groups": mesh_info.get("unmatched_groups", []),
+        "volume_count": len(mesh_info.get("volume_tags", [])),
+        "boundary_surface_count": len(mesh_info.get("boundary_surfaces", [])),
     }
