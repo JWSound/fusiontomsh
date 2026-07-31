@@ -1,7 +1,7 @@
 # Fusion to MSH Export (Fusion Add-In)
 
 <p align="center">
-  <img src="scripticon.svg" alt="MSHExport Script Icon" width="25%" />
+  <img src="ScriptIcon.svg" alt="MSHExport Script Icon" width="25%" />
 </p>
 
 Autodesk Fusion script for exporting **visible bodies** to configurable **Gmsh `.msh` meshes** for downstream BEM/FEM workflows.
