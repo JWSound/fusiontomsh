@@ -3,6 +3,7 @@ import os
 import platform
 import shutil
 import sys
+import time
 import zipfile
 
 
@@ -156,6 +157,26 @@ def install_global_min_mesh_size_callback(gmsh_module, min_size):
         pass
 
 
+def collect_mesh_statistics(gmsh_module):
+    statistics = {
+        "element_count": 0,
+        "physical_group_count": 0,
+    }
+
+    try:
+        _, element_tags, _ = gmsh_module.model.mesh.getElements()
+        statistics["element_count"] = sum(len(tags) for tags in element_tags)
+    except Exception:
+        pass
+
+    try:
+        statistics["physical_group_count"] = len(gmsh_module.model.getPhysicalGroups())
+    except Exception:
+        pass
+
+    return statistics
+
+
 def write_gmsh_mesh(
     gmsh_module,
     msh_path,
@@ -168,10 +189,17 @@ def write_gmsh_mesh(
     msh_file_version=2.2,
     algo_3d_id=None,
 ):
+    timings = {}
+    total_started = time.perf_counter()
+    phase_started = time.perf_counter()
     gmsh_module.initialize()
+    timings["gmsh_initialize_s"] = time.perf_counter() - phase_started
     try:
+        phase_started = time.perf_counter()
         build_model()
+        timings["build_model_s"] = time.perf_counter() - phase_started
 
+        phase_started = time.perf_counter()
         global_min_size = gmsh_length(global_min_val)
         global_max_size = gmsh_length(global_max_val)
 
@@ -186,8 +214,24 @@ def write_gmsh_mesh(
         gmsh_module.option.setNumber("Mesh.MeshSizeFromCurvature", effective_global_curvature)
         gmsh_module.option.setNumber("Mesh.MshFileVersion", msh_file_version)
         gmsh_module.option.setNumber("Mesh.Binary", 0)
+        timings["mesh_options_s"] = time.perf_counter() - phase_started
 
+        phase_started = time.perf_counter()
         gmsh_module.model.mesh.generate(mesh_dimension)
+        timings["mesh_generate_s"] = time.perf_counter() - phase_started
+
+        phase_started = time.perf_counter()
+        mesh_statistics = collect_mesh_statistics(gmsh_module)
+        timings["mesh_statistics_s"] = time.perf_counter() - phase_started
+
+        phase_started = time.perf_counter()
         gmsh_module.write(msh_path)
+        timings["mesh_write_s"] = time.perf_counter() - phase_started
     finally:
+        phase_started = time.perf_counter()
         gmsh_module.finalize()
+        timings["gmsh_finalize_s"] = time.perf_counter() - phase_started
+        timings["gmsh_total_s"] = time.perf_counter() - total_started
+
+    mesh_statistics["timings"] = timings
+    return mesh_statistics

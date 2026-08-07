@@ -1,5 +1,6 @@
 {
 	"python.autoComplete.extraPaths":	["C:/Users/John/AppData/Roaming/Autodesk/Autodesk Fusion 360/API/Python/defs"],
 	"python.analysis.extraPaths":	["C:/Users/John/AppData/Roaming/Autodesk/Autodesk Fusion 360/API/Python/defs"],
-	"python.defaultInterpreterPath":	"C:/Users/John/AppData/Local/Autodesk/webdeploy/production/4bca736941837d3e42bba21bb36b9891e34b2fce/Python/python.exe"
+	"python.defaultInterpreterPath": "C:/Users/John/AppData/Local/Autodesk/webdeploy/production/9c5312dfff2e4569cd1d269973ddf11cb999f782/Python/python.exe",
+	"git.ignoreLimitWarning": true
 }

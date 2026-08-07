@@ -31,10 +31,15 @@ The script adds an **Export to MSH** command in Fusion, exports each selected bo
   - Exports Gmsh MSH 4.1 tetrahedral volume meshes.
   - Creates a physical volume group for the selected body and physical surface groups for tagged faces.
   - Supports optional face-based boundary groups with local element sizing that blends back to the default volume size.
+  - Supports any number of surface groups with live validation and an in-dialog output-file picker.
+  - Recalls saved surface names, sizes, face selections, algorithm, and output path for each previously exported body.
+  - Includes **Quick Export FEM MSH** for overwriting the most recently exported FEM mesh with its saved settings.
 
 ## Requirements
 
 - Autodesk Fusion
+
+For VS Code debugging, breakpoints, Fusion event logging, and unit-test commands, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ### Gmsh dependency resolution
 
@@ -44,7 +49,7 @@ The script loads the Gmsh library from an included bundled wheel package.
 
 - `MSHExport.py` — main Fusion add-in
 - `MSHExport.manifest` — Fusion add-in manifest
-- `Resources/` — script icons
+- `Resources/` — separate BEM/FEM export and quick-export toolbar icons, plus transparent icon masters
 - `wheelhouse/` — optional bundled wheels (includes `gmsh-4.15.0-...whl`)
 
 At runtime, the script may create:
@@ -80,9 +85,11 @@ For volumetric acoustic FEM export, use **Export FEM MSH** from the same toolbar
 
 1. Select one solid/watertight target body.
 2. Set the default volume mesh size.
-3. Optionally expand boundary groups, name each group, set a local size, and select one or more faces.
-4. Choose a save location for the `.msh` file.
-5. The add-in exports a Gmsh MSH 4.1 volume mesh with physical volume and surface groups.
+3. Use **Add Group** for each optional surface group, then enter its name, local size, and faces. Use **Remove Group** to delete an unneeded group.
+4. Use **Browse** in the **Output File** row to choose the `.msh` file. The dialog keeps **Export Mesh** disabled until all entries are valid.
+5. The add-in exports a Gmsh MSH 4.1 volume mesh and reports the completion time, physical-group count, and total element count.
+
+After a successful FEM export, **Quick Export FEM MSH** overwrites that file using the saved body, surface groups, face selections, sizes, and algorithm. If model edits invalidate a saved body or face, run the full FEM export again to review the selections.
 
 ## Mesh control notes
 

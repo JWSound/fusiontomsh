@@ -1,0 +1,34 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Fusion: Tail MSHExport Log",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}\\scripts\\tail_fusion_log.ps1",
+                "-Follow"
+            ],
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "Python: Run Unit Tests",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "-B",
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "tests",
+                "-v"
+            ],
+            "problemMatcher": []
+        }
+    ]
+}

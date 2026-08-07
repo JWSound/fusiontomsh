@@ -1,3 +1,6 @@
+import math
+import time
+
 import gmsh_support
 
 
@@ -121,6 +124,14 @@ def _add_surface_size_fields(gmsh_module, boundary_groups, default_size):
             continue
 
         target_lc = gmsh_support.gmsh_length(size)
+        if target_lc >= default_lc or math.isclose(
+            target_lc,
+            default_lc,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            continue
+
         blend_dist = max(default_lc, target_lc) * DEFAULT_SURFACE_BLEND_FACTOR
 
         distance_field = gmsh_module.model.mesh.field.add("Distance")
@@ -147,9 +158,12 @@ def _add_surface_size_fields(gmsh_module, boundary_groups, default_size):
 
 
 def build_fem_export_model(gmsh_module, step_path, volume_name, default_size, boundary_groups):
+    timings = {}
+    phase_started = time.perf_counter()
     gmsh_module.model.add("FusionFEMExport")
     imported_entities = gmsh_module.model.occ.importShapes(step_path)
     gmsh_module.model.occ.synchronize()
+    timings["gmsh_import_step_s"] = time.perf_counter() - phase_started
 
     volume_tags = sorted(tag for dim, tag in imported_entities if dim == 3)
     if not volume_tags:
@@ -160,12 +174,15 @@ def build_fem_export_model(gmsh_module, step_path, volume_name, default_size, bo
     volume_group = gmsh_module.model.addPhysicalGroup(3, volume_tags)
     gmsh_module.model.setPhysicalName(3, volume_group, volume_name)
 
+    phase_started = time.perf_counter()
     boundary_surfaces = _boundary_surfaces_for_volumes(gmsh_module, volume_tags)
     surface_descriptors = [
         _surface_descriptor(gmsh_module, surface_tag)
         for surface_tag in boundary_surfaces
     ]
+    timings["surface_descriptors_s"] = time.perf_counter() - phase_started
 
+    phase_started = time.perf_counter()
     unmatched_groups = []
     tagged_surface_tags = set()
     for boundary_group_data in boundary_groups:
@@ -192,11 +209,15 @@ def build_fem_export_model(gmsh_module, step_path, volume_name, default_size, bo
     if untagged_boundary_surfaces:
         boundary_group = gmsh_module.model.addPhysicalGroup(2, untagged_boundary_surfaces)
         gmsh_module.model.setPhysicalName(2, boundary_group, f"{volume_name}_boundary")
+    timings["surface_group_matching_s"] = time.perf_counter() - phase_started
 
+    phase_started = time.perf_counter()
     _add_surface_size_fields(gmsh_module, boundary_groups, default_size)
+    timings["surface_size_fields_s"] = time.perf_counter() - phase_started
     return {
         "volume_tags": volume_tags,
         "boundary_surfaces": untagged_boundary_surfaces,
         "tagged_boundary_surfaces": sorted(tagged_surface_tags),
         "unmatched_groups": unmatched_groups,
+        "timings": timings,
     }

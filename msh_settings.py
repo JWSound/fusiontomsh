@@ -7,7 +7,6 @@ DEFAULT_SEAM_BLENDING_ENABLED = True
 DEFAULT_ALGO_2D = "Automatic"
 DEFAULT_FEM_SIZE = 5.0
 DEFAULT_FEM_BOUNDARY_SIZE = 2.0
-DEFAULT_FEM_TAG_COUNT = 4
 DEFAULT_ALGO_3D = "Automatic"
 
 ALGO_2D_NAMES = ("Automatic", "MeshAdapt", "Delaunay", "Frontal-Delaunay")
@@ -52,9 +51,11 @@ def load_mesh_settings(settings_path):
         "by_body": {},
         "fem": {
             "last_msh_path": "",
+            "last_body_key": "",
             "algo_3d": DEFAULT_ALGO_3D,
             "default_size": DEFAULT_FEM_SIZE,
             "boundary_size": DEFAULT_FEM_BOUNDARY_SIZE,
+            "by_body": {},
         }
     }
 
@@ -126,6 +127,73 @@ def load_mesh_settings(settings_path):
                     settings["fem"]["boundary_size"] = boundary_size
             except Exception:
                 pass
+
+            last_body_key = fem_settings.get("last_body_key", "")
+            if isinstance(last_body_key, str):
+                settings["fem"]["last_body_key"] = last_body_key
+
+            by_body = fem_settings.get("by_body", {})
+            if isinstance(by_body, dict):
+                cleaned_by_body = {}
+                for body_key, body_settings in by_body.items():
+                    if not isinstance(body_key, str) or not isinstance(body_settings, dict):
+                        continue
+
+                    body_token = body_settings.get("body_token", "")
+                    body_name = body_settings.get("body_name", "")
+                    msh_path = body_settings.get("msh_path", "")
+                    if not isinstance(body_token, str) or not body_token:
+                        continue
+                    if not isinstance(body_name, str):
+                        body_name = ""
+                    if not isinstance(msh_path, str):
+                        msh_path = ""
+
+                    try:
+                        body_default_size = float(body_settings.get("default_size", settings["fem"]["default_size"]))
+                    except Exception:
+                        body_default_size = settings["fem"]["default_size"]
+                    if body_default_size <= 0:
+                        body_default_size = settings["fem"]["default_size"]
+
+                    body_algo = body_settings.get("algo_3d", settings["fem"]["algo_3d"])
+                    if body_algo not in ALGO_3D_NAMES:
+                        body_algo = settings["fem"]["algo_3d"]
+
+                    cleaned_groups = []
+                    boundary_groups = body_settings.get("boundary_groups", [])
+                    if isinstance(boundary_groups, list):
+                        for group in boundary_groups:
+                            if not isinstance(group, dict):
+                                continue
+                            name = group.get("name", "")
+                            if not isinstance(name, str) or not name.strip():
+                                continue
+                            try:
+                                size = float(group.get("size", body_default_size))
+                            except Exception:
+                                size = body_default_size
+                            if size <= 0:
+                                size = body_default_size
+                            face_tokens = group.get("face_tokens", [])
+                            if not isinstance(face_tokens, list):
+                                face_tokens = []
+                            face_tokens = [token for token in face_tokens if isinstance(token, str) and token]
+                            cleaned_groups.append({
+                                "name": name.strip(),
+                                "size": size,
+                                "face_tokens": face_tokens,
+                            })
+
+                    cleaned_by_body[body_key] = {
+                        "body_token": body_token,
+                        "body_name": body_name,
+                        "msh_path": msh_path,
+                        "algo_3d": body_algo,
+                        "default_size": body_default_size,
+                        "boundary_groups": cleaned_groups,
+                    }
+                settings["fem"]["by_body"] = cleaned_by_body
     except Exception:
         return settings
 
@@ -151,11 +219,14 @@ def save_mesh_settings(settings_path, settings_data):
 
 def save_fem_settings(settings_path, fem_settings):
     settings = load_mesh_settings(settings_path)
+    existing_fem = settings.get("fem", {})
     settings["fem"] = {
         "last_msh_path": fem_settings.get("last_msh_path", ""),
+        "last_body_key": fem_settings.get("last_body_key", existing_fem.get("last_body_key", "")),
         "algo_3d": fem_settings.get("algo_3d", DEFAULT_ALGO_3D),
         "default_size": fem_settings.get("default_size", DEFAULT_FEM_SIZE),
         "boundary_size": fem_settings.get("boundary_size", DEFAULT_FEM_BOUNDARY_SIZE),
+        "by_body": fem_settings.get("by_body", existing_fem.get("by_body", {})),
     }
     save_mesh_settings(settings_path, settings)
 

@@ -1,12 +1,14 @@
 import os
 import tempfile
+from datetime import datetime
+import time
 
 from export_types import BodyMeshSettings, ExportBody
 import fem_model
 import fusion_export
 import gmsh_model
 import gmsh_support
-from msh_settings import algo_3d_text_to_id, algo_text_to_id, sanitize_body_size_settings, save_fem_settings, save_mesh_settings
+from msh_settings import algo_3d_text_to_id, algo_text_to_id, load_mesh_settings, sanitize_body_size_settings, save_fem_settings, save_mesh_settings
 
 
 def _write_gmsh_mesh(
@@ -182,7 +184,9 @@ def export_fem_body_to_msh(
     algo_3d_text,
     boundary_groups,
     settings_path,
+    body_preset_key=None,
 ):
+    workflow_started = time.perf_counter()
     if body is None:
         return {
             "success": False,
@@ -213,6 +217,11 @@ def export_fem_body_to_msh(
             "name": group_name,
             "size": group_size,
             "face_descriptors": face_descriptors,
+            "face_tokens": [
+                token
+                for token in boundary_group.get("face_tokens", [])
+                if isinstance(token, str) and token
+            ],
         })
 
     temp_dir = tempfile.gettempdir()
@@ -221,7 +230,9 @@ def export_fem_body_to_msh(
     mesh_info = {}
 
     try:
+        phase_started = time.perf_counter()
         fusion_export.export_body_to_step(design, export_mgr, body, step_path)
+        fusion_step_export_s = time.perf_counter() - phase_started
 
         def build_model():
             mesh_info.update(fem_model.build_fem_export_model(
@@ -232,7 +243,7 @@ def export_fem_body_to_msh(
                 cleaned_boundary_groups
             ))
 
-        gmsh_support.write_gmsh_mesh(
+        mesh_statistics = gmsh_support.write_gmsh_mesh(
             gmsh_module,
             msh_path,
             build_model,
@@ -245,8 +256,34 @@ def export_fem_body_to_msh(
             algo_3d_id=algo_3d_text_to_id(algo_3d_text),
         )
 
+        fem_settings = load_mesh_settings(settings_path).get("fem", {})
+        by_body = dict(fem_settings.get("by_body", {}))
+        try:
+            body_token = body.entityToken
+        except Exception:
+            body_token = ""
+        preset_key = body_preset_key or body_token
+        if preset_key and body_token:
+            by_body[preset_key] = {
+                "body_token": body_token,
+                "body_name": body_name,
+                "msh_path": msh_path,
+                "algo_3d": algo_3d_text,
+                "default_size": default_size,
+                "boundary_groups": [
+                    {
+                        "name": group["name"],
+                        "size": group["size"],
+                        "face_tokens": group.get("face_tokens", []),
+                    }
+                    for group in cleaned_boundary_groups
+                ],
+            }
+
+        phase_started = time.perf_counter()
         save_fem_settings(settings_path, {
             "last_msh_path": msh_path,
+            "last_body_key": preset_key,
             "algo_3d": algo_3d_text,
             "default_size": default_size,
             "boundary_size": (
@@ -254,15 +291,27 @@ def export_fem_body_to_msh(
                 if cleaned_boundary_groups
                 else default_size
             ),
+            "by_body": by_body,
         })
+        settings_save_s = time.perf_counter() - phase_started
     finally:
         if os.path.exists(step_path):
             os.remove(step_path)
 
+    timings = dict(mesh_statistics.get("timings", {}))
+    timings.update(mesh_info.get("timings", {}))
+    timings["fusion_step_export_s"] = fusion_step_export_s
+    timings["settings_save_s"] = settings_save_s
+    timings["workflow_total_s"] = time.perf_counter() - workflow_started
+
     return {
         "success": True,
         "msh_path": msh_path,
+        "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "unmatched_groups": mesh_info.get("unmatched_groups", []),
         "volume_count": len(mesh_info.get("volume_tags", [])),
         "boundary_surface_count": len(mesh_info.get("boundary_surfaces", [])),
+        "group_count": mesh_statistics.get("physical_group_count", 0),
+        "element_count": mesh_statistics.get("element_count", 0),
+        "timings": timings,
     }
