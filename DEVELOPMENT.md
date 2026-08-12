@@ -49,4 +49,18 @@ Logic that does not require Fusion's process should remain in ordinary Python mo
 python -B -m unittest discover -s tests -v
 ```
 
+To reproduce the FEM pipeline from a STEP file without launching Fusion, use
+the bundled Gmsh runtime through the diagnostic script:
+
+```powershell
+python -B scripts/debug_fem_step.py path/to/body.step --size-mm 12 --algorithm automatic
+```
+
+The command writes `boundary.msh`, `gmsh.log`, and `report.json` under
+`runs/gmsh_step_debug/<body-name>`. It returns exit code 2 when Gmsh cannot
+produce any tetrahedral elements, while preserving the surface mesh and details
+of any overlapping facets named in the Gmsh error. After identifying a problem
+surface, test a local size field with e.g. `--refine-surface 170:0.5`; the option
+may be repeated for multiple Gmsh surface tags.
+
 Fusion API UI behavior still requires Fusion as the host, but breakpoints plus the persistent app log make the event path observable rather than relying on UI symptoms alone.

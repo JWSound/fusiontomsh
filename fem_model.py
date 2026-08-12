@@ -41,7 +41,10 @@ def fusion_face_descriptor(face):
 
     return {
         "area": float(area) * gmsh_support.FUSION_TO_GMSH_LENGTH_SCALE ** 2 if area is not None else None,
-        "centroid": _gmsh_point_from_fusion(point) if point is not None else None,
+        # Fusion's pointOnFace is an arbitrary point that lies on the face; it
+        # is not the face centroid. Keep it only as a fallback discriminator
+        # when a bounding box is unavailable.
+        "sample_point": _gmsh_point_from_fusion(point) if point is not None else None,
         "normal": normal,
         "bbox": bbox_tuple,
     }
@@ -68,31 +71,56 @@ def _bbox_diagonal_squared(bbox):
 
 
 def match_fusion_face_to_surfaces(face_descriptor, surface_descriptors):
-    if not face_descriptor.get("centroid") or face_descriptor.get("area") is None:
+    if face_descriptor.get("area") is None:
         return []
 
     face_area = max(float(face_descriptor["area"]), 1e-12)
-    face_centroid = face_descriptor["centroid"]
+    # Accept legacy descriptors produced before pointOnFace was correctly
+    # identified as a sample point instead of a centroid.
+    face_sample_point = face_descriptor.get("sample_point") or face_descriptor.get("centroid")
     face_bbox = face_descriptor.get("bbox")
     face_diag_sq = _bbox_diagonal_squared(face_bbox)
+    face_diag = face_diag_sq ** 0.5
     scored = []
 
     for surface in surface_descriptors:
         area_error = abs(surface["area"] - face_area) / face_area
-        centroid_error = _distance_squared(surface["centroid"], face_centroid) / face_diag_sq
-        bbox_error = 0.0
+        bbox_error = None
         if face_bbox and surface.get("bbox"):
-            bbox_error = sum(abs(surface["bbox"][idx] - face_bbox[idx]) for idx in range(6)) / max(face_area ** 0.5, 1e-6)
+            bbox_error = sum(
+                abs(surface["bbox"][idx] - face_bbox[idx])
+                for idx in range(6)
+            ) / max(face_diag, 1e-6)
 
-        score = area_error + centroid_error + 0.05 * bbox_error
-        scored.append((score, area_error, centroid_error, surface["tag"]))
+        point_error = None
+        if face_sample_point and surface.get("centroid"):
+            point_error = _distance_squared(
+                surface["centroid"], face_sample_point
+            ) / face_diag_sq
+
+        # Area and bounding box describe the whole face in both Fusion and
+        # OpenCASCADE. An arbitrary pointOnFace must not outweigh that exact
+        # geometric match, particularly for cylinders and other curved faces.
+        if bbox_error is not None:
+            score = area_error + 0.1 * bbox_error
+        elif point_error is not None:
+            score = area_error + point_error
+        else:
+            score = area_error
+        scored.append((score, area_error, bbox_error, point_error, surface["tag"]))
 
     if not scored:
         return []
 
-    scored.sort()
-    best_score, best_area_error, best_centroid_error, best_tag = scored[0]
-    if best_area_error <= 0.02 and best_centroid_error <= 0.01:
+    scored.sort(key=lambda item: item[0])
+    best_score, best_area_error, best_bbox_error, best_point_error, best_tag = scored[0]
+    if best_bbox_error is not None:
+        if best_area_error <= 0.02 and best_bbox_error <= 0.02:
+            return [best_tag]
+        if best_score <= 0.03:
+            return [best_tag]
+        return []
+    if best_point_error is not None and best_area_error <= 0.02 and best_point_error <= 0.01:
         return [best_tag]
     if best_score <= 0.08:
         return [best_tag]
