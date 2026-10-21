@@ -19,6 +19,8 @@ The script adds an **Export to MSH** command in Fusion, exports each selected bo
   - Attempts to create conformal shared topology between touching bodies.
   - Blends only coarser bodies near shared edges toward the smaller adjacent body size, preserving finer bodies' requested sizing.
   - Uses the connected finer body's full boundary for blending, covering small gaps between partially shared seam segments. This controls sizing; it does not heal gaps or thin faces in the source geometry.
+  - Before fragmentation, repairs near-coincident rims on single-face planar surface bodies by reusing matching free edges from other surface bodies (0.01 mm tolerance). This prevents tiny interface slivers and open seams caused by separately exported perimeter curves. Reattaches straight boundary edges and preserves the original cap normal and physical-group name.
+  - Rim repair runs only with seam-aware blending enabled and changes temporary Gmsh geometry, not Fusion bodies. It skips solids, multi-face caps, holes, periodic rims, ambiguous matches, non-planar replacement rims, and larger gaps. It is not a general watertightness guarantee; inspect unsupported seams in the source CAD.
   - Falls back to the legacy non-conformal export path if Gmsh cannot mesh the shared topology.
 - Supports Gmsh 2D algorithms:
   - Automatic

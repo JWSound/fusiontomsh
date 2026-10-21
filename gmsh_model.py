@@ -1,4 +1,5 @@
 import gmsh_support
+import seam_repair
 
 
 DEFAULT_SEAM_BLEND_FACTOR = 3.0
@@ -232,6 +233,7 @@ def build_gmsh_export_model(gmsh_module, step_paths, group_name_map, body_settin
             ])
 
         gmsh_module.model.occ.synchronize()
+        body_dim_tags, repaired_normals = seam_repair.repair_planar_caps(gmsh_module, body_dim_tags)
         mapped_body_entities = fragment_body_entities(gmsh_module, body_dim_tags)
         gmsh_module.model.occ.synchronize()
 
@@ -241,6 +243,8 @@ def build_gmsh_export_model(gmsh_module, step_paths, group_name_map, body_settin
                 surfaces = boundary_surfaces(gmsh_module, body_dim_tags[body_idx])
 
             if surfaces:
+                if body_idx in repaired_normals:
+                    seam_repair.restore_cap_orientation(gmsh_module, surfaces, repaired_normals[body_idx])
                 body_surfaces[body_idx] = surfaces
                 physical_tag = gmsh_module.model.addPhysicalGroup(2, surfaces)
                 gmsh_module.model.setPhysicalName(2, physical_tag, group_name)
