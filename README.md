@@ -1,7 +1,7 @@
 # Fusion to MSH Export (Fusion Add-In)
 
 <p align="center">
-  <img src="\Resources\IconMasters\BEMExport.png" alt="MSHExport Script Icon" width="25%" />
+  <img src="Resources/IconMasters/BEMExport.png" alt="MSHExport Script Icon" width="25%" />
 </p>
 
 Autodesk Fusion script for exporting **visible bodies** to configurable **Gmsh `.msh` meshes** for downstream BEM/FEM workflows.
@@ -40,13 +40,14 @@ The script adds an **Export to MSH** command in Fusion, exports each selected bo
 
 ## Requirements
 
-- Autodesk Fusion
+- Autodesk Fusion on Windows x64 or an Apple Silicon Mac (ARM64).
+- A writable folder for the extracted add-in and its saved settings.
 
-For VS Code debugging, breakpoints, Fusion event logging, and unit-test commands, see [DEVELOPMENT.md](DEVELOPMENT.md).
+For VS Code debugging, breakpoints, Fusion event logging, unit tests, and release packaging, see [DEVELOPMENT.md](https://github.com/JWSound/fusiontomsh/blob/main/DEVELOPMENT.md).
 
 ### Gmsh dependency resolution
 
-The script loads the Gmsh library from an included bundled wheel package.
+Release ZIPs include Gmsh 4.15.0 for the selected platform. No separate Python or Gmsh installation is needed. The current release packages do not include an Intel Mac runtime.
 
 ## Repository layout
 
@@ -62,12 +63,24 @@ At runtime, the script may create:
 
 ## Install in Fusion
 
-1. Clone or download this repo and extract its contents into a folder.
-2. Open Fusion.
-3. Go to **Utilities → Add-Ins**.
-4. Click the **+** icon and **Script or add-in from device**
-5. Select fusiontomsh folder. Enable the add-in in the list and if needed turn on **Run on Startup**
-6. Run the tool using the icons in the Utilities navbar.
+1. Open the [latest release](https://github.com/JWSound/fusiontomsh/releases/latest) and expand **Assets**.
+2. Download the ZIP for your computer:
+
+   | Computer | Release asset |
+   | --- | --- |
+   | Windows x64 | `FusionToMSH-v<version>-windows-x64.zip` |
+   | Apple Silicon Mac | `FusionToMSH-v<version>-macos-arm64.zip` |
+
+   Choose the packaged ZIP, rather than GitHub's automatic **Source code** downloads.
+3. Extract the ZIP to a permanent, writable location, such as your Documents folder. It contains an **MSHExport** folder with `MSHExport.py`, `MSHExport.manifest`, `Resources/`, and `wheelhouse/`. Keep the folder named **MSHExport** and extract all files before continuing.
+4. In Fusion, open **Utilities > Add-Ins > Scripts and Add-Ins**.
+5. On the **Add-Ins** tab, click **+**, then **Script or add-in from device**. Select the extracted **MSHExport** folder itself, not the ZIP or its parent folder.
+6. Select **MSHExport** in the list and click **Run**. Enable **Run on Startup** if you want Fusion to load it automatically.
+7. Use the BEM/FEM export icons in the **MSH Export** panel on the Utilities toolbar.
+
+Fusion links to this folder, so keep it in place after installation. The first export extracts the bundled Gmsh runtime into `.gmsh_wheels/` inside it.
+
+For Autodesk's instructions, see [Manage scripts and add-ins](https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-MANAGE-SCRIPTS-ADD-INS.htm).
 
 ## Usage
 

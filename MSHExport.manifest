@@ -5,8 +5,8 @@
 	"description":	{
 		"":	"Exports currently visible bodies to .MSH files using gmsh"
 	},
-	"version":	"",
+	"version":	"0.1.0",
 	"supportedOS":	"windows|mac",
 	"editEnabled":	true,
-	"iconFilename":	"scripticon.png"
+	"iconFilename":	"ScriptIcon.png"
 }
