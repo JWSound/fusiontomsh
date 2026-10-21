@@ -18,6 +18,7 @@ The script adds an **Export to MSH** command in Fusion, exports each selected bo
 - Supports **seam-aware element size blending** for connected bodies:
   - Attempts to create conformal shared topology between touching bodies.
   - Blends only coarser bodies near shared edges toward the smaller adjacent body size, preserving finer bodies' requested sizing.
+  - Uses the connected finer body's full boundary for blending, covering small gaps between partially shared seam segments. This controls sizing; it does not heal gaps or thin faces in the source geometry.
   - Falls back to the legacy non-conformal export path if Gmsh cannot mesh the shared topology.
 - Supports Gmsh 2D algorithms:
   - Automatic
