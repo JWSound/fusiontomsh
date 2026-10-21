@@ -37,6 +37,7 @@ import fusion_export
 import gmsh_model
 import gmsh_support
 import msh_settings
+import seam_repair
 from msh_settings import (
     ALGO_3D_NAMES,
     ALGO_2D_NAMES,
@@ -104,6 +105,7 @@ def _reload_local_modules():
         msh_settings,
         export_types,
         gmsh_support,
+        seam_repair,
         fusion_export,
         gmsh_model,
         fem_model,
