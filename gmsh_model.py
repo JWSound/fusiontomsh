@@ -1,4 +1,5 @@
 import gmsh_support
+import seam_repair
 
 
 DEFAULT_SEAM_BLEND_FACTOR = 3.0
@@ -104,6 +105,19 @@ def collect_shared_curve_adjacency(gmsh_module, body_surfaces):
     }
 
 
+def body_boundary_curves(gmsh_module, surfaces):
+    # Keep individual face boundaries, including edges of any sliver faces
+    # produced by fragmentation of an imperfectly coincident interface.
+    return {
+        tag
+        for dim, tag in gmsh_module.model.getBoundary(
+            [(2, tag) for tag in surfaces],
+            combined=False, oriented=False, recursive=False
+        )
+        if dim == 1
+    }
+
+
 def add_distance_threshold_field(gmsh_module, entity_option, entity_tags, lc_min, lc_max, dist_min, dist_max, surfaces=None):
     if not entity_tags:
         return None
@@ -149,22 +163,32 @@ def add_background_mesh_fields(gmsh_module, body_surfaces, body_settings, enable
     if enable_seam_fields:
         shared_curves = collect_shared_curve_adjacency(gmsh_module, body_surfaces)
         seam_targets_by_body = {}
+        boundary_curves_by_body = {}
         for curve_tag, body_indices in shared_curves.items():
             for body_idx in body_indices:
                 if body_idx not in body_surfaces:
                     continue
 
                 body_lc = gmsh_support.gmsh_length(body_settings[body_idx])
-                finer_adjacent_sizes = [
-                    gmsh_support.gmsh_length(body_settings[idx])
+                finer_adjacent_bodies = [
+                    idx
                     for idx in body_indices
                     if idx != body_idx and gmsh_support.gmsh_length(body_settings[idx]) < body_lc
                 ]
-                if not finer_adjacent_sizes:
+                if not finer_adjacent_bodies:
                     continue
 
-                seam_lc_min = min(finer_adjacent_sizes)
-                seam_targets_by_body.setdefault(body_idx, {}).setdefault(seam_lc_min, set()).add(curve_tag)
+                for adjacent_idx in finer_adjacent_bodies:
+                    seam_lc_min = gmsh_support.gmsh_length(body_settings[adjacent_idx])
+                    targets = seam_targets_by_body.setdefault(body_idx, {}).setdefault(seam_lc_min, set())
+                    # Exact shared edges can cover only part of a near-coincident
+                    # seam. Use the connected fine body's full boundary so the
+                    # transition also covers small gaps between those segments.
+                    if adjacent_idx not in boundary_curves_by_body:
+                        boundary_curves_by_body[adjacent_idx] = body_boundary_curves(
+                            gmsh_module, body_surfaces[adjacent_idx]
+                        )
+                    targets.update(boundary_curves_by_body[adjacent_idx])
 
         for body_idx, seam_targets in seam_targets_by_body.items():
             body_lc = gmsh_support.gmsh_length(body_settings[body_idx])
@@ -209,6 +233,7 @@ def build_gmsh_export_model(gmsh_module, step_paths, group_name_map, body_settin
             ])
 
         gmsh_module.model.occ.synchronize()
+        body_dim_tags, repaired_normals = seam_repair.repair_planar_caps(gmsh_module, body_dim_tags)
         mapped_body_entities = fragment_body_entities(gmsh_module, body_dim_tags)
         gmsh_module.model.occ.synchronize()
 
@@ -218,6 +243,8 @@ def build_gmsh_export_model(gmsh_module, step_paths, group_name_map, body_settin
                 surfaces = boundary_surfaces(gmsh_module, body_dim_tags[body_idx])
 
             if surfaces:
+                if body_idx in repaired_normals:
+                    seam_repair.restore_cap_orientation(gmsh_module, surfaces, repaired_normals[body_idx])
                 body_surfaces[body_idx] = surfaces
                 physical_tag = gmsh_module.model.addPhysicalGroup(2, surfaces)
                 gmsh_module.model.setPhysicalName(2, physical_tag, group_name)

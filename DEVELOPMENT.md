@@ -64,3 +64,19 @@ surface, test a local size field with e.g. `--refine-surface 170:0.5`; the optio
 may be repeated for multiple Gmsh surface tags.
 
 Fusion API UI behavior still requires Fusion as the host, but breakpoints plus the persistent app log make the event path observable rather than relying on UI symptoms alone.
+
+## Build a release
+
+Set `version` in `MSHExport.manifest`, update `RELEASE_NOTES.md`, and run:
+
+```powershell
+python -B -m unittest discover -s tests -v
+python scripts/build_release.py
+```
+
+The builder writes Windows x64 and macOS ARM64 ZIPs plus `SHA256SUMS.txt` to
+`dist/`. Each ZIP contains an `MSHExport/` folder with the matching bundled
+Gmsh wheel, runtime modules, icons, documentation, and license notices. An
+explicit file list excludes user settings, caches, tests, and generated meshes.
+Upload these assets to a GitHub release tagged `v<manifest version>`; use
+`RELEASE_NOTES.md` as the release description.

@@ -7,6 +7,7 @@
 
 # Runtime/generated dependencies
 .gmsh_wheels/
+dist/
 
 # Python caches
 __pycache__/
