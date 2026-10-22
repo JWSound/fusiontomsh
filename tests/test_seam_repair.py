@@ -2,9 +2,10 @@
 
 from collections import Counter
 import os
+import math
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import gmsh_model
 import seam_repair
@@ -13,6 +14,39 @@ try:
     import gmsh
 except (ImportError, OSError):
     gmsh = None
+
+
+class PolylineTests(unittest.TestCase):
+    def test_invalid_samples_fail_closed(self):
+        for invalid in ([], [0, 0], [math.nan, 0, 0], [math.inf, 0, 0]):
+            with self.subTest(invalid=invalid):
+                self.assertEqual(seam_repair._max_distance_to_polyline(
+                    invalid, [0, 0, 0, 1, 0, 0]), math.inf)
+                self.assertEqual(seam_repair._max_distance_to_polyline(
+                    [0, 0, 0], invalid), math.inf)
+
+    def test_trimmed_endpoints_and_degenerate_segments(self):
+        self.assertAlmostEqual(seam_repair._max_distance_to_polyline(
+            [1.02, 0, 0], [0, 0, 0, 0, 0, 0, 1, 0, 0]), .02)
+
+    def test_reverse_traversal(self):
+        self.assertEqual(seam_repair._max_distance_to_polyline(
+            [1, 0, 0, .5, 0, 0, 0, 0, 0], [0, 0, 0, .5, 0, 0, 1, 0, 0]), 0)
+
+    def test_adaptive_sampling_and_refinement_limit(self):
+        model = Mock()
+        model.model.getValue.side_effect = lambda dim, tag, ts: [
+            v for t in ts for v in (t, t*t, 0)]
+        with patch.object(seam_repair, 'DENSE_CURVE_SAMPLES', 3):
+            polyline = seam_repair._polyline(model, 1, 0, 1)
+            self.assertGreater(len(polyline), 9)
+            with patch.object(seam_repair, 'MAX_REFINEMENTS', 1):
+                with self.assertRaises(ValueError):
+                    seam_repair._polyline(model, 1, 0, 1)
+        model.model.getValue.return_value = [math.nan, 0, 0]
+        model.model.getValue.side_effect = None
+        with self.assertRaises(ValueError):
+            seam_repair._sample(model, 1, 0, 1, 3)
 
 
 @unittest.skipIf(gmsh is None, 'Gmsh runtime is not installed')
@@ -99,10 +133,52 @@ class PlanarSeamRepairTests(unittest.TestCase):
         self.assertEqual(set(normals), {1})
         self.mesh_and_check_seam(repaired, normals)
 
+    def test_repair_does_not_depend_on_occ_closest_point(self):
+        # macOS arm64: getClosestPoint can return parameter 1.0 for every point
+        # after the first export in a session. The repair must still succeed.
+        bodies, _, _ = self.make_geometry()
+
+        def broken(dim, tag, coordinates):
+            # Mimic the observed failure: a fixed parameter outside the
+            # trimmed range and no usable projected point.
+            count = len(coordinates) // 3
+            return [0.0] * (3 * count), [-1.0] * count
+
+        with patch.object(gmsh.model, 'getClosestPoint', side_effect=broken):
+            repaired, normals = seam_repair.repair_planar_caps(gmsh, bodies)
+        self.assertEqual(set(normals), {1})
+        self.mesh_and_check_seam(repaired, normals)
+
     def test_larger_gap_is_unchanged(self):
         bodies, _, _ = self.make_geometry(deviation=.1)
         before = gmsh.model.getEntities()
         repaired, normals = seam_repair.repair_planar_caps(gmsh, bodies)
+        self.assertEqual(repaired, bodies)
+        self.assertFalse(normals)
+        self.assertEqual(before, gmsh.model.getEntities())
+
+    def test_repeated_sessions_with_failed_projection(self):
+        for iteration in range(3):
+            if iteration:
+                gmsh.finalize()
+                gmsh.initialize()
+                gmsh.option.setNumber('General.Terminal', 0)
+                gmsh.model.add('seam_regression')
+            bodies, _, _ = self.make_geometry(endpoint_shift=.002)
+            with patch.object(gmsh.model, 'getClosestPoint',
+                              side_effect=AssertionError('Projection must not be called')):
+                repaired, normals = seam_repair.repair_planar_caps(gmsh, bodies)
+                self.assertEqual(set(normals), {1})
+                self.mesh_and_check_seam(repaired, normals)
+
+    def test_invalid_curve_values_preserve_geometry(self):
+        bodies, _, _ = self.make_geometry()
+        before = gmsh.model.getEntities()
+        original = gmsh.model.getValue
+        def invalid(dim, tag, parameters):
+            return [math.nan] * (3 * len(parameters)) if dim == 1 else original(dim, tag, parameters)
+        with patch.object(gmsh.model, 'getValue', side_effect=invalid):
+            repaired, normals = seam_repair.repair_planar_caps(gmsh, bodies)
         self.assertEqual(repaired, bodies)
         self.assertFalse(normals)
         self.assertEqual(before, gmsh.model.getEntities())
