@@ -89,6 +89,9 @@ gmsh = None
 
 # Global variables to keep handlers in memory
 handlers = []
+FEM_SELECTION_EVENT_ID = "MSHExport.RestoreFEMSelections"
+_fem_selection_event = None
+_fem_selection_updates = []
 
 
 def _reload_local_modules():
@@ -402,6 +405,7 @@ class FEMDialogState:
         self.next_group_id = 1
         self.body_preset_key = None
         self.restoring = False
+        self.pending_faces = None
 
 
 def _add_fem_group_inputs(inputs, state, name="", size=None, faces=None):
@@ -410,9 +414,11 @@ def _add_fem_group_inputs(inputs, state, name="", size=None, faces=None):
         _log_fem_event("cannot add surface group: root container 'fem_surface_groups' was not found", True)
         return None
 
+    _queue_fem_selection_restore(inputs, state)
     group_id = state.next_group_id
     state.next_group_id += 1
     state.group_ids.append(group_id)
+    state.pending_faces[group_id] = list(faces or [])
     group = container.children.addGroupCommandInput(
         _fem_tag_input_id("group", group_id),
         name or f"Surface Group {group_id}",
@@ -450,6 +456,8 @@ def _update_fem_group_controls(inputs, state):
 
 
 def _remove_fem_group_inputs(inputs, state, group_id):
+    _queue_fem_selection_restore(inputs, state)
+    state.pending_faces.pop(group_id, None)
     group = inputs.itemById(_fem_tag_input_id("group", group_id))
     if group:
         group.deleteMe()
@@ -510,6 +518,64 @@ def _fem_face_key(face):
         return (getattr(face.body, "tempId", None), face.tempId)
     except Exception:
         return (_entity_token(face), id(face))
+
+
+def _queue_fem_selection_restore(inputs, state):
+    # Fusion replays the union of active selections when dynamic selection
+    # inputs are rebuilt, AFTER inputChanged returns. Snapshot before changing
+    # the layout and restore once at idle, not in validateInputs (which can run
+    # before the replay and must never undo subsequent user selections).
+    if state.pending_faces is not None:
+        return
+    state.pending_faces = {
+        g: _selected_entities(inputs.itemById(_fem_tag_input_id("faces", g)))
+        for g in state.group_ids
+    }
+    _fem_selection_updates.append((inputs, state))
+    # Fusion 2705 can return False here while still delivering the queued event.
+    adsk.core.Application.get().fireCustomEvent(FEM_SELECTION_EVENT_ID)
+
+
+def _restore_pending_fem_selections(inputs, state):
+    pending = state.pending_faces
+    state.pending_faces = None
+    if pending is None or not inputs.isValid:
+        return
+    state.restoring = True
+    try:
+        for group_id in state.group_ids:
+            inp = inputs.itemById(_fem_tag_input_id("faces", group_id))
+            if inp:
+                inp.clearSelection()
+        for group_id in state.group_ids:
+            inp = inputs.itemById(_fem_tag_input_id("faces", group_id))
+            if inp:
+                inp.hasFocus = True
+                for face in pending.get(group_id, []):
+                    inp.addSelection(face)
+    finally:
+        state.restoring = False
+
+
+class GmshFEMSelectionRestoreHandler(adsk.core.CustomEventHandler):
+    def notify(self, args):
+        updates = list(_fem_selection_updates)
+        _fem_selection_updates.clear()
+        for inputs, state in updates:
+            try:
+                _restore_pending_fem_selections(inputs, state)
+                if inputs.isValid:
+                    _update_fem_validation_message(inputs, state)
+            except Exception:
+                _log_fem_event("selection restoration failed\n{}".format(traceback.format_exc()), True)
+
+
+def _stop_fem_selection_restore():
+    global _fem_selection_event
+    if _fem_selection_event is not None:
+        adsk.core.Application.get().unregisterCustomEvent(FEM_SELECTION_EVENT_ID)
+        _fem_selection_event = None
+    _fem_selection_updates.clear()
 
 
 def _fem_validation_errors(inputs, state):
@@ -651,7 +717,7 @@ def _add_toolbar_button(ui, command_id, name, description, handler, icon_resourc
 
 
 def run(context):
-    global gmsh
+    global gmsh, _fem_selection_event
     ui = None
     try:
         _reload_local_modules()
@@ -660,6 +726,13 @@ def run(context):
 
         _cleanup_command_definition(ui)
         handlers.clear()
+        _stop_fem_selection_restore()
+        _fem_selection_event = app.registerCustomEvent(FEM_SELECTION_EVENT_ID)
+        if _fem_selection_event is None:
+            raise RuntimeError("Could not register FEM selection restoration.")
+        selection_restore = GmshFEMSelectionRestoreHandler()
+        _fem_selection_event.add(selection_restore)
+        handlers.append(selection_restore)
 
         if gmsh is None:
             gmsh = _import_gmsh_from_wheelhouse()
@@ -713,6 +786,7 @@ def run(context):
 
 
 def stop(context):
+    _stop_fem_selection_restore()
     try:
         app = adsk.core.Application.get()
         _finish_script(app.userInterface, terminate=False, cleanup_command=True)
