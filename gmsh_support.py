@@ -6,6 +6,8 @@ import sys
 import time
 import zipfile
 
+import fem_patch_repair
+
 
 FUSION_TO_GMSH_LENGTH_SCALE = 10.0
 
@@ -217,11 +219,38 @@ def write_gmsh_mesh(
         timings["mesh_options_s"] = time.perf_counter() - phase_started
 
         phase_started = time.perf_counter()
+        repaired_patches = []
+        if mesh_dimension == 3:
+            gmsh_module.model.mesh.generate(2)
+            repaired_patches = fem_patch_repair.repair_boundary(gmsh_module, global_max_size)
+            expected_groups = fem_patch_repair.physical_groups(gmsh_module) if repaired_patches else None
         gmsh_module.model.mesh.generate(mesh_dimension)
         timings["mesh_generate_s"] = time.perf_counter() - phase_started
 
+        # Gmsh can return normally after warning that no volume elements were
+        # generated. Never overwrite a FEM file with a surface-only result.
+        if mesh_dimension == 3:
+            volumes = gmsh_module.model.getEntities(3)
+            empty_volumes = []
+            for _, volume_tag in volumes:
+                _, element_tags, _ = gmsh_module.model.mesh.getElements(3, volume_tag)
+                if not any(len(tags) for tags in element_tags):
+                    empty_volumes.append(volume_tag)
+            if not volumes or empty_volumes:
+                detail = ", ".join(str(tag) for tag in empty_volumes) or "none imported"
+                raise RuntimeError(
+                    "FEM meshing failed: no 3D elements in volume(s): " + detail
+                    + ". Gmsh may have generated only surface triangles. "
+                    "Check the boundary for gaps, overlaps, or degenerate faces. "
+                    "The output file was not written."
+                )
+
+            if repaired_patches:
+                fem_patch_repair.validate_repaired_volume(gmsh_module, expected_groups)
+
         phase_started = time.perf_counter()
         mesh_statistics = collect_mesh_statistics(gmsh_module)
+        mesh_statistics["repaired_patches"] = repaired_patches
         timings["mesh_statistics_s"] = time.perf_counter() - phase_started
 
         phase_started = time.perf_counter()

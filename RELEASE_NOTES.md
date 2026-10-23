@@ -1,3 +1,13 @@
+# Unreleased
+
+- Repair unambiguous missing CAD corner triangles during FEM meshing without
+  changing Fusion geometry or physical groups. Validate the repaired surface
+  and tetrahedral boundary before writing; refuse unsupported openings.
+- Mention repairs only in the post-export completion message when used,
+  including Quick FEM Export.
+- Reject FEM exports with empty volumes instead of reporting surface-only
+  meshes as successful exports.
+
 # v0.1.0
 
 Initial packaged release of Fusion to MSH Export.

@@ -36,6 +36,7 @@ import fem_model
 import fusion_export
 import gmsh_model
 import gmsh_support
+import fem_patch_repair
 import msh_settings
 import seam_repair
 from msh_settings import (
@@ -107,6 +108,7 @@ def _reload_local_modules():
     for module in (
         msh_settings,
         export_types,
+        fem_patch_repair,
         gmsh_support,
         seam_repair,
         fusion_export,
@@ -283,6 +285,14 @@ def _show_fem_export_result(ui, result):
         f"Total elements: {result.get('element_count', 0):,}\n"
         f"Saved to: {result.get('msh_path', '')}"
     )
+    repaired_patches = result.get("repaired_patches", [])
+    if repaired_patches:
+        count = len(repaired_patches)
+        summary += (
+            f"\n\nMesh repair: {count} missing triangular "
+            + ("patch was" if count == 1 else "patches were")
+            + " repaired during export. CAD geometry was unchanged."
+        )
     unmatched_groups = result.get("unmatched_groups", [])
     if unmatched_groups:
         summary += (

@@ -16,7 +16,7 @@ PLATFORMS = {
 FILES = (
     'MSHExport.py', 'MSHExport.manifest', 'ScriptIcon.png',
     'export_types.py', 'export_workflow.py', 'fem_model.py', 'fusion_export.py',
-    'gmsh_model.py', 'gmsh_support.py', 'msh_settings.py', 'seam_repair.py',
+    'gmsh_model.py', 'gmsh_support.py', 'msh_settings.py', 'seam_repair.py', 'fem_patch_repair.py',
     'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'RELEASE_NOTES.md',
     'FusionScreenshot.png',
 )
