@@ -47,6 +47,7 @@ class ReleasePackagingTests(unittest.TestCase):
                     manifest = json.loads(archive.read('MSHExport/MSHExport.manifest'))
                     self.assertIn('MSHExport/' + manifest['iconFilename'], names)
                     self.assertIn('MSHExport/seam_repair.py', names)
+                    self.assertIn('MSHExport/fem_patch_repair.py', names)
                     self.assertIn('MSHExport/Resources/MSHExport/32x32.png', names)
                     self.assertEqual([n for n in names if n.endswith('.whl')],
                                      ['MSHExport/wheelhouse/' + wheel])

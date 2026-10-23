@@ -313,5 +313,6 @@ def export_fem_body_to_msh(
         "boundary_surface_count": len(mesh_info.get("boundary_surfaces", [])),
         "group_count": mesh_statistics.get("physical_group_count", 0),
         "element_count": mesh_statistics.get("element_count", 0),
+        "repaired_patches": mesh_statistics.get("repaired_patches", []),
         "timings": timings,
     }
