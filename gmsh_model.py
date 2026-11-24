@@ -1,3 +1,6 @@
+import heapq
+import math
+
 import gmsh_support
 import seam_repair
 
@@ -160,54 +163,17 @@ def add_background_mesh_fields(gmsh_module, body_surfaces, body_settings, enable
         if body_field:
             field_ids.append(body_field)
 
+    set_background_fields(gmsh_module, field_ids)
     if enable_seam_fields:
-        shared_curves = collect_shared_curve_adjacency(gmsh_module, body_surfaces)
-        seam_targets_by_body = {}
-        boundary_curves_by_body = {}
-        for curve_tag, body_indices in shared_curves.items():
-            for body_idx in body_indices:
-                if body_idx not in body_surfaces:
-                    continue
+        targets = collect_seam_targets(gmsh_module, body_surfaces, body_settings)
+        if targets:
+            field_ids.extend(add_surface_distance_fields(
+                gmsh_module, body_surfaces, body_settings, targets
+            ))
+    set_background_fields(gmsh_module, field_ids)
 
-                body_lc = gmsh_support.gmsh_length(body_settings[body_idx])
-                finer_adjacent_bodies = [
-                    idx
-                    for idx in body_indices
-                    if idx != body_idx and gmsh_support.gmsh_length(body_settings[idx]) < body_lc
-                ]
-                if not finer_adjacent_bodies:
-                    continue
 
-                for adjacent_idx in finer_adjacent_bodies:
-                    seam_lc_min = gmsh_support.gmsh_length(body_settings[adjacent_idx])
-                    targets = seam_targets_by_body.setdefault(body_idx, {}).setdefault(seam_lc_min, set())
-                    # Exact shared edges can cover only part of a near-coincident
-                    # seam. Use the connected fine body's full boundary so the
-                    # transition also covers small gaps between those segments.
-                    if adjacent_idx not in boundary_curves_by_body:
-                        boundary_curves_by_body[adjacent_idx] = body_boundary_curves(
-                            gmsh_module, body_surfaces[adjacent_idx]
-                        )
-                    targets.update(boundary_curves_by_body[adjacent_idx])
-
-        for body_idx, seam_targets in seam_targets_by_body.items():
-            body_lc = gmsh_support.gmsh_length(body_settings[body_idx])
-            for seam_lc_min, curve_tags in seam_targets.items():
-                blend_dist = max(body_lc, seam_lc_min) * DEFAULT_SEAM_BLEND_FACTOR
-
-                seam_field = add_distance_threshold_field(
-                    gmsh_module,
-                    "CurvesList",
-                    curve_tags,
-                    seam_lc_min,
-                    body_lc,
-                    0.0,
-                    blend_dist,
-                    body_surfaces[body_idx]
-                )
-                if seam_field:
-                    field_ids.append(seam_field)
-
+def set_background_fields(gmsh_module, field_ids):
     if field_ids:
         if len(field_ids) == 1:
             gmsh_module.model.mesh.field.setAsBackgroundMesh(field_ids[0])
@@ -215,6 +181,120 @@ def add_background_mesh_fields(gmsh_module, body_surfaces, body_settings, enable
             min_field = gmsh_module.model.mesh.field.add("Min")
             gmsh_module.model.mesh.field.setNumbers(min_field, "FieldsList", field_ids)
             gmsh_module.model.mesh.field.setAsBackgroundMesh(min_field)
+
+
+def collect_seam_targets(gmsh_module, body_surfaces, body_settings):
+    """Seed only real shared edges; proximity must never establish connectivity."""
+    targets = {}
+    for curve, bodies in collect_shared_curve_adjacency(gmsh_module, body_surfaces).items():
+        finest = min(gmsh_support.gmsh_length(body_settings[b]) for b in bodies)
+        for body in bodies:
+            if gmsh_support.gmsh_length(body_settings[body]) > finest:
+                targets.setdefault(body, {}).setdefault(finest, set()).add(curve)
+    return targets
+
+
+def surface_distances(points, triangles, seeds, limit):
+    """Truncated multi-source Dijkstra on a body's pilot triangulation.
+
+    Nodes are identified by topology, never merged by coordinate proximity.
+    Edge paths approximate geodesics (with mesh-direction dependent error).
+    """
+    graph = {}
+    for triangle in triangles:
+        for a, b in zip(triangle, triangle[1:] + triangle[:1]):
+            length = math.dist(points[a], points[b])
+            graph.setdefault(a, {})[b] = length
+            graph.setdefault(b, {})[a] = length
+    distances = {node: 0.0 for node in seeds if node in graph}
+    queue = [(0.0, node) for node in distances]
+    heapq.heapify(queue)
+    while queue:
+        distance, node = heapq.heappop(queue)
+        if distance != distances[node]:
+            continue
+        for neighbor, length in graph[node].items():
+            candidate = distance + length
+            if candidate < limit and candidate < distances.get(neighbor, math.inf):
+                distances[neighbor] = candidate
+                heapq.heappush(queue, (candidate, neighbor))
+    return distances
+
+
+def add_surface_distance_fields(gmsh_module, body_surfaces, body_settings, targets):
+    """Build independent per-face views, then discard the preliminary mesh.
+
+    List-based views survive mesh.clear(). Restrict each view to its CAD face
+    so a nearby panel can never supply the interpolation for another panel.
+    The pilot uses quarter-size triangles, independent of final algorithm.
+    """
+    mesh = gmsh_module.model.mesh
+    options = {
+        "Mesh.MeshSizeFactor": 0.25,
+        "Mesh.MeshSizeMin": 0,
+        "Mesh.MeshSizeMax": max(map(gmsh_support.gmsh_length, body_settings)),
+        "Mesh.MeshSizeFromPoints": 0,
+        "Mesh.MeshSizeFromCurvature": 0,
+        "Mesh.MeshSizeExtendFromBoundary": 0,
+        "Mesh.Algorithm": 6,
+        "Mesh.ElementOrder": 1,
+        "Mesh.RecombineAll": 0,
+    }
+    saved = {key: gmsh_module.option.getNumber(key) for key in options}
+    fields = []
+    try:
+        for key, value in options.items():
+            gmsh_module.option.setNumber(key, value)
+        mesh.generate(2)
+        tags, coords, _ = mesh.getNodes()
+        points = {int(tag): tuple(coords[3*i:3*i+3]) for i, tag in enumerate(tags)}
+        for body, source_groups in targets.items():
+            coarse = gmsh_support.gmsh_length(body_settings[body])
+            limit = coarse * DEFAULT_SEAM_BLEND_FACTOR
+            by_face = {}
+            for face in body_surfaces[body]:
+                types, _, connectivity = mesh.getElements(2, face)
+                triangles = []
+                for kind, nodes in zip(types, connectivity):
+                    if kind != 2:
+                        raise RuntimeError("Surface-distance pilot requires linear triangles")
+                    triangles.extend(tuple(map(int, nodes[i:i+3]))
+                                     for i in range(0, len(nodes), 3))
+                if not triangles:
+                    raise RuntimeError("Surface-distance pilot has an unmeshed face")
+                by_face[face] = triangles
+            triangles = [tri for tris in by_face.values() for tri in tris]
+            sizes = {node: coarse for tri in triangles for node in tri}
+            for fine, curves in source_groups.items():
+                seeds = set()
+                for curve in curves:
+                    nodes, _, _ = mesh.getNodes(1, curve, includeBoundary=True)
+                    seeds.update(map(int, nodes))
+                distances = surface_distances(points, triangles, seeds, limit)
+                if not distances:
+                    raise RuntimeError("Surface-distance pilot lost a shared seam")
+                for node, distance in distances.items():
+                    sizes[node] = min(sizes[node], fine + (coarse-fine)*distance/limit)
+            for face, tris in by_face.items():
+                data = []
+                for tri in tris:
+                    data.extend(points[node][axis] for axis in range(3) for node in tri)
+                    data.extend(sizes[node] for node in tri)
+                view = gmsh_module.view.add("Surface seam sizes %s" % face)
+                gmsh_module.view.addListData(view, "ST", len(tris), data)
+                gmsh_module.view.option.setNumber(view, "Visible", 0)
+                field = mesh.field.add("PostView")
+                mesh.field.setNumber(field, "ViewTag", view)
+                mesh.field.setNumber(field, "UseClosest", 1)
+                restricted = mesh.field.add("Restrict")
+                mesh.field.setNumber(restricted, "InField", field)
+                mesh.field.setNumbers(restricted, "SurfacesList", [face])
+                fields.append(restricted)
+    finally:
+        mesh.clear()
+        for key, value in saved.items():
+            gmsh_module.option.setNumber(key, value)
+    return fields
 
 
 def build_gmsh_export_model(gmsh_module, step_paths, group_name_map, body_settings, conformal_topology=True):
