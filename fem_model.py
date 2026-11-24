@@ -1,4 +1,3 @@
-import math
 import time
 
 import gmsh_support
@@ -142,47 +141,56 @@ def _boundary_surfaces_for_volumes(gmsh_module, volume_tags):
 
 
 def _add_surface_size_fields(gmsh_module, boundary_groups, default_size):
-    field_ids = []
-    default_lc = gmsh_support.gmsh_length(default_size)
+    field = gmsh_module.model.mesh.field
+    body = gmsh_support.gmsh_length(default_size)
+    # The writer's global maximum includes even groups that failed STEP matching.
+    sizes = [gmsh_support.gmsh_length(g["size"]) for g in boundary_groups
+             if g.get("size") is not None]
+    ceiling = max([body] + sizes)
+    coarse_fields = []
+    caps = []
 
-    for boundary_group in boundary_groups:
-        surface_tags = boundary_group.get("surface_tags", [])
-        size = boundary_group.get("size")
-        if not surface_tags or size is None:
+    def ramp(distance, near, far, width):
+        tag = field.add("Threshold")
+        field.setNumber(tag, "InField", distance)
+        field.setNumber(tag, "SizeMin", near)
+        field.setNumber(tag, "SizeMax", far)
+        field.setNumber(tag, "DistMin", 0.0)
+        field.setNumber(tag, "DistMax", width)
+        return tag
+
+    def combine(operation, tags):
+        if len(tags) == 1:
+            return tags[0]
+        tag = field.add(operation)
+        field.setNumbers(tag, "FieldsList", tags)
+        return tag
+
+    for group in boundary_groups:
+        surfaces = group.get("surface_tags")
+        if not surfaces or group.get("size") is None:
             continue
-
-        target_lc = gmsh_support.gmsh_length(size)
-        if target_lc >= default_lc or math.isclose(
-            target_lc,
-            default_lc,
-            rel_tol=1e-9,
-            abs_tol=1e-12,
-        ):
+        target = gmsh_support.gmsh_length(group["size"])
+        if target == body == ceiling:
             continue
+        distance = field.add("Distance")
+        field.setNumbers(distance, "FacesList", sorted(surfaces))
+        field.setNumber(distance, "Sampling", 100)
+        if target > body:
+            coarse_fields.append(ramp(distance, target, body, target * DEFAULT_SURFACE_BLEND_FACTOR))
+        if target < ceiling:
+            # A smaller tagged face caps overlapping coarse fields. Its cap
+            # relaxes away from the face so distant coarse tags remain effective.
+            caps.append(ramp(distance, target, ceiling, ceiling * DEFAULT_SURFACE_BLEND_FACTOR))
 
-        blend_dist = max(default_lc, target_lc) * DEFAULT_SURFACE_BLEND_FACTOR
-
-        distance_field = gmsh_module.model.mesh.field.add("Distance")
-        gmsh_module.model.mesh.field.setNumbers(distance_field, "FacesList", sorted(surface_tags))
-        gmsh_module.model.mesh.field.setNumber(distance_field, "Sampling", 100)
-
-        threshold_field = gmsh_module.model.mesh.field.add("Threshold")
-        gmsh_module.model.mesh.field.setNumber(threshold_field, "InField", distance_field)
-        gmsh_module.model.mesh.field.setNumber(threshold_field, "LcMin", target_lc)
-        gmsh_module.model.mesh.field.setNumber(threshold_field, "LcMax", default_lc)
-        gmsh_module.model.mesh.field.setNumber(threshold_field, "DistMin", 0.0)
-        gmsh_module.model.mesh.field.setNumber(threshold_field, "DistMax", max(blend_dist, 1e-6))
-        field_ids.append(threshold_field)
-
-    if not field_ids:
-        return
-
-    if len(field_ids) == 1:
-        gmsh_module.model.mesh.field.setAsBackgroundMesh(field_ids[0])
-    else:
-        min_field = gmsh_module.model.mesh.field.add("Min")
-        gmsh_module.model.mesh.field.setNumbers(min_field, "FieldsList", field_ids)
-        gmsh_module.model.mesh.field.setAsBackgroundMesh(min_field)
+    if coarse_fields:
+        caps.append(combine("Max", coarse_fields))
+    elif ceiling > body:
+        baseline = field.add("MathEval")
+        field.setString(baseline, "F", str(body))
+        caps.append(baseline)
+    if caps:
+        field.setAsBackgroundMesh(combine("Min", caps))
 
 
 def build_fem_export_model(gmsh_module, step_path, volume_name, default_size, boundary_groups):
