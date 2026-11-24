@@ -197,6 +197,10 @@ def build_fem_export_model(gmsh_module, step_path, volume_name, default_size, bo
     timings = {}
     phase_started = time.perf_counter()
     gmsh_module.model.add("FusionFEMExport")
+    # OCC's default bounds can include untrimmed portions of curved surfaces,
+    # causing valid Fusion face matches to fail. Compute bounds from the trimmed
+    # tessellation; this must be enabled before STEP import/synchronization.
+    gmsh_module.option.setNumber("Geometry.OCCBoundsUseStl", 1)
     imported_entities = gmsh_module.model.occ.importShapes(step_path)
     gmsh_module.model.occ.synchronize()
     timings["gmsh_import_step_s"] = time.perf_counter() - phase_started
