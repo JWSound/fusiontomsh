@@ -1,4 +1,9 @@
+import math
+import statistics
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import Mock
 
 import fem_model
 
@@ -40,7 +45,7 @@ class _FakeGmsh:
 
 
 class SurfaceSizeFieldTests(unittest.TestCase):
-    def test_skips_equal_and_coarser_surface_sizes(self):
+    def test_coarse_face_blends_to_body_and_equal_face_caps_overlap(self):
         gmsh = _FakeGmsh()
 
         fem_model._add_surface_size_fields(
@@ -52,8 +57,25 @@ class SurfaceSizeFieldTests(unittest.TestCase):
             default_size=1.6,
         )
 
-        self.assertEqual(gmsh.model.mesh.field.added, [])
-        self.assertIsNone(gmsh.model.mesh.field.background_field)
+        field = gmsh.model.mesh.field
+        self.assertEqual(field.added, ["Distance", "Threshold", "Distance", "Threshold", "Min"])
+        self.assertIn((2, "SizeMin", 16.0), field.number_values)
+        self.assertIn((2, "SizeMax", 20.0), field.number_values)
+        self.assertIn((4, "SizeMin", 20.0), field.number_values)
+        self.assertIn((4, "SizeMax", 16.0), field.number_values)
+        self.assertIn((5, "FieldsList", [2, 4]), field.number_list_values)
+        self.assertEqual(field.background_field, 5)
+
+    def test_unmatched_coarse_group_preserves_body_size(self):
+        gmsh = Mock()
+        field = gmsh.model.mesh.field
+        field.add.return_value = 1
+        fem_model._add_surface_size_fields(
+            gmsh, [{"surface_tags": [], "size": 3.6}], default_size=2.0
+        )
+        field.add.assert_called_once_with("MathEval")
+        field.setString.assert_called_once_with(1, "F", "20.0")
+        field.setAsBackgroundMesh.assert_called_once_with(1)
 
     def test_keeps_smaller_surface_refinement(self):
         gmsh = _FakeGmsh()
@@ -67,6 +89,57 @@ class SurfaceSizeFieldTests(unittest.TestCase):
         self.assertEqual(gmsh.model.mesh.field.added, ["Distance", "Threshold"])
         self.assertIn((1, "FacesList", [3, 7]), gmsh.model.mesh.field.number_list_values)
         self.assertEqual(gmsh.model.mesh.field.background_field, 2)
+
+
+class ExportedSizeTests(unittest.TestCase):
+    def test_local_coarse_face_on_20_mm_body(self):
+        try:
+            import gmsh
+        except ImportError:
+            self.skipTest("Gmsh is required for mesh measurements")
+
+        with tempfile.TemporaryDirectory() as directory:
+            step = str(Path(directory) / "cube.step")
+            mesh = str(Path(directory) / "cube.msh")
+            gmsh.initialize()
+            try:
+                gmsh.model.occ.addBox(0, 0, 0, 500, 500, 500)
+                gmsh.model.occ.synchronize()
+                groups = [
+                    {"name": name, "size": size,
+                     "face_descriptors": [fem_model._surface_descriptor(gmsh, face)]}
+                    for name, size, face in [("Cone", 2, 1), ("Interface", 3.6, 2),
+                                             ("Surround", 2, 3)]
+                ]
+                gmsh.write(step)
+            finally:
+                gmsh.finalize()
+
+            def build():
+                result = fem_model.build_fem_export_model(gmsh, step, "Body", 2, groups)
+                self.assertEqual(result["unmatched_groups"], [])
+
+            fem_model.gmsh_support.write_gmsh_mesh(
+                gmsh, mesh, build, 2, 3.6, 0, mesh_dimension=3, msh_file_version=4.1
+            )
+            gmsh.initialize()
+            try:
+                gmsh.open(mesh)
+                self.assertGreater(len(gmsh.model.mesh.getElementsByType(4)[0]), 0)
+                ids, xyz, _ = gmsh.model.mesh.getNodes()
+                points = dict(zip(ids, zip(xyz[::3], xyz[1::3], xyz[2::3])))
+                for dim, tag in gmsh.model.getPhysicalGroups(2):
+                    name = gmsh.model.getPhysicalName(dim, tag)
+                    edges = set()
+                    for face in gmsh.model.getEntitiesForPhysicalGroup(dim, tag):
+                        _, nodes = gmsh.model.mesh.getElementsByType(2, face)
+                        for a, b, c in zip(nodes[::3], nodes[1::3], nodes[2::3]):
+                            edges.update(tuple(sorted(pair)) for pair in [(a, b), (b, c), (c, a)])
+                    median = statistics.median(math.dist(points[a], points[b]) for a, b in edges)
+                    expected = 36 if name == "Interface" else 20
+                    self.assertAlmostEqual(median, expected, delta=3, msg=name)
+            finally:
+                gmsh.finalize()
 
 
 class FusionFaceMatchingTests(unittest.TestCase):
