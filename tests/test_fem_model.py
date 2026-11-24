@@ -142,6 +142,40 @@ class ExportedSizeTests(unittest.TestCase):
                 gmsh.finalize()
 
 
+class ImportedCurvedFaceTests(unittest.TestCase):
+    def test_trimmed_surface_groups_survive_step_import(self):
+        # SAWMAX MID's default OCC bounds extend to x=-61.78 although the
+        # trimmed face is entirely in x>=0. Import captures the bounds option.
+        bbox = (0, 75.871771, 30.332741, 61.782207, 97.988942, 153.897156)
+        loose_bbox = (-61.782207,) + bbox[1:]
+        gmsh = Mock()
+        options = {}
+        imported_bounds = {}
+        gmsh.option.setNumber.side_effect = options.__setitem__
+
+        def import_shapes(path):
+            imported_bounds[23] = (
+                bbox if options.get("Geometry.OCCBoundsUseStl") == 1
+                else loose_bbox
+            )
+            return [(3, 1)]
+
+        gmsh.model.occ.importShapes.side_effect = import_shapes
+        gmsh.model.getBoundary.return_value = [(2, 23)]
+        gmsh.model.getBoundingBox.side_effect = lambda dim, tag: imported_bounds[tag]
+        gmsh.model.occ.getMass.return_value = 6686.237282
+        gmsh.model.occ.getCenterOfMass.return_value = (30, 85, 90)
+        groups = [{"name": "MID", "size": 0.4, "face_descriptors": [
+            {"area": 6687.226171, "bbox": bbox}
+        ]}]
+        result = fem_model.build_fem_export_model(
+            gmsh, "throat.step", "throatFEM", 0.4, groups
+        )
+        self.assertEqual(result["unmatched_groups"], [])
+        self.assertEqual(groups[0]["surface_tags"], [23])
+        gmsh.model.addPhysicalGroup.assert_any_call(2, [23])
+
+
 class FusionFaceMatchingTests(unittest.TestCase):
     def test_matches_curved_face_by_area_and_bbox_not_arbitrary_surface_point(self):
         cylinder_bbox = (
